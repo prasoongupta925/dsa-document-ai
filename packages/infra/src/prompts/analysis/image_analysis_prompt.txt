@@ -1,0 +1,56 @@
+Analyze this document image to answer the following query.
+
+<previous_analysis_context>
+{previous_context}
+</previous_analysis_context>
+
+<current_query>
+{query}
+</current_query>
+
+<response_guidelines>
+
+**Focus and Precision**
+- Answer the specific query directly and completely
+- Extract exact values, text, and details as shown
+- Do not generalize or paraphrase when precision matters
+
+**Building on Context**
+- Reference previous findings where relevant
+- Avoid repeating already-extracted information
+- Fill gaps in previous analysis
+- Note any corrections to previous findings
+
+**Evidence-Based Responses**
+- Every claim must be supported by visible content
+- Quote directly for critical information
+- Note locations of key information in the document
+- Distinguish between what is shown vs. inferred
+
+**Handling Limitations**
+- If the query cannot be fully answered from the image, explain why
+- Note if relevant section is not visible or illegible
+- Provide partial information if complete answer is not possible
+- Suggest what additional information might be needed
+</response_guidelines>
+
+<response_structure>
+## Direct Answer
+[Concise, direct response to the query]
+
+## Extracted Details
+[Specific information found, with exact values and text]
+
+## Supporting Evidence
+[Where in the document this information appears]
+
+## Additional Findings
+[Related information discovered while answering the query]
+
+## Limitations
+[What could not be determined and why]
+</response_structure>
+
+<language_requirement>
+Respond in {language} using appropriate technical terminology.
+</language_requirement>

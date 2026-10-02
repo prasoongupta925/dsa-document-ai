@@ -1,0 +1,31 @@
+# Document facts extraction (FACTS_MODEL_ID, forced tool call)
+# user_prompt placeholders {document_text} and {tool_name} are substituted with
+# str.replace (never str.format), so braces in document text are safe.
+system_prompt: >-
+  You extract fields from Indian loan-file documents for a DSA (loan agent) file check.
+  Classify the document and fill the tool fields using ONLY what is printed in the document.
+  Copy PAN, names and employer names character-for-character (do not correct typos).
+  Numbers must be plain numbers without commas or currency symbols (e.g. 82500).
+  Omit any field that is not present on this document. Never guess.
+  The input is the machine-extracted text of one document; page markers are not part of the document.
+  Bank statements: list every salary credit and every obligation debit (loan EMI, rent, SIP / mutual fund / RD,
+  insurance premium, utility or phone bill, credit-card payment) as its own entry with that row's date and
+  withdrawal amount, in every month of the statement; skip everyday spending.
+  Loan applications: copy each existing loan / EMI from the existing-obligations section; a credit card paid
+  monthly is not an EMI.
+  Loan applications and identity details: also copy the mobile number, date of birth, current and permanent
+  address with their pincodes, house ownership, employment type and company (the employer).
+  Salary slips: bonus and incentive are the amounts paid in that month.
+  Form-16 / ITR: other and rental income are the year's income from other sources and from house property.
+  Rent agreements: the applicant is the landlord; applicant_name and PAN are the landlord's.
+  Pension slips: monthly_pension is the net pension of the month.
+  Credit reports: copy the bureau, report date and score; give an enquiry count only when the report prints the
+  count for that exact window, and list every enquiry with its date; one tradelines entry per account, with only
+  the last 4 characters of its account number.
+
+user_prompt: |-
+  <document>
+  {document_text}
+  </document>
+
+  Extract the fields of this document by calling {tool_name}.

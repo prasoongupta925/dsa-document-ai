@@ -1,0 +1,382 @@
+import type { DynamoDBStreamHandler, DynamoDBRecord } from 'aws-lambda';
+import { getConnectionIdsByProject } from './store.js';
+import {
+  sendToConnection,
+  WorkflowMessage,
+  StepMessage,
+  DocumentMessage,
+} from './websocket.js';
+
+interface WorkflowData {
+  status?: { S: string };
+  project_id?: { S: string };
+  file_name?: { S: string };
+}
+
+interface StepData {
+  project_id?: { S: string };
+  document_id?: { S: string };
+  current_step?: { S: string };
+  [key: string]: { M?: { status?: { S: string } } } | { S: string } | undefined;
+}
+
+interface StreamImage {
+  PK?: { S: string };
+  SK?: { S: string };
+  data?: { M: WorkflowData | StepData };
+}
+
+type RecordType = 'workflow' | 'step' | 'unknown';
+
+function getRecordType(image: StreamImage | undefined): RecordType {
+  if (!image) return 'unknown';
+
+  const pk = image.PK?.S || '';
+  const sk = image.SK?.S || '';
+
+  if (
+    (pk.startsWith('DOC#') || pk.startsWith('WEB#')) &&
+    sk.startsWith('WF#')
+  ) {
+    return 'workflow';
+  }
+  if (pk.startsWith('WF#') && sk === 'STEP') {
+    return 'step';
+  }
+  return 'unknown';
+}
+
+function extractWorkflowInfo(image: StreamImage | undefined) {
+  if (!image) return null;
+
+  const pk = image.PK?.S || '';
+  const sk = image.SK?.S || '';
+  const data = image.data?.M as WorkflowData | undefined;
+
+  // Extract documentId from DOC# or WEB# prefix
+  let documentId = '';
+  if (pk.startsWith('DOC#')) {
+    documentId = pk.slice(4);
+  } else if (pk.startsWith('WEB#')) {
+    documentId = pk.slice(4);
+  }
+
+  const workflowId = sk.startsWith('WF#') ? sk.slice(3) : '';
+  const projectId = data?.project_id?.S || '';
+  const status = data?.status?.S || '';
+
+  return { documentId, workflowId, projectId, status };
+}
+
+function extractStepInfo(image: StreamImage | undefined) {
+  if (!image) return null;
+
+  const pk = image.PK?.S || '';
+  const data = image.data?.M as StepData | undefined;
+
+  const workflowId = pk.startsWith('WF#') ? pk.slice(3) : '';
+  const projectId = data?.project_id?.S || '';
+  const documentId = data?.document_id?.S || '';
+  const currentStep = data?.current_step?.S || '';
+
+  // Extract step statuses
+  const steps: Record<string, string> = {};
+  if (data) {
+    for (const [key, value] of Object.entries(data)) {
+      if (
+        key !== 'project_id' &&
+        key !== 'document_id' &&
+        key !== 'current_step' &&
+        value &&
+        typeof value === 'object' &&
+        'M' in value
+      ) {
+        const stepData = value.M as { status?: { S: string } } | undefined;
+        if (stepData?.status?.S) {
+          steps[key] = stepData.status.S;
+        }
+      }
+    }
+  }
+
+  // Extract qa_regen from segment_analyzer
+  let qaRegen: { status: string; segment_index: number } | null = null;
+  const segmentAnalyzer = data?.segment_analyzer as
+    | { M?: Record<string, { M?: Record<string, { S?: string; N?: string }> }> }
+    | undefined;
+  if (segmentAnalyzer?.M?.qa_regen?.M) {
+    const qr = segmentAnalyzer.M.qa_regen.M;
+    qaRegen = {
+      status: qr.status?.S || '',
+      segment_index: Number(qr.segment_index?.N || '0'),
+    };
+  }
+
+  return { workflowId, projectId, documentId, currentStep, steps, qaRegen };
+}
+
+function findChangedSteps(
+  oldSteps: Record<string, string>,
+  newSteps: Record<string, string>,
+): Array<{ stepName: string; oldStatus: string; newStatus: string }> {
+  const changes: Array<{
+    stepName: string;
+    oldStatus: string;
+    newStatus: string;
+  }> = [];
+
+  for (const [stepName, newStatus] of Object.entries(newSteps)) {
+    const oldStatus = oldSteps[stepName] || '';
+    if (oldStatus !== newStatus) {
+      changes.push({ stepName, oldStatus, newStatus });
+    }
+  }
+
+  return changes;
+}
+
+async function processWorkflowRecord(record: DynamoDBRecord): Promise<void> {
+  if (record.eventName !== 'MODIFY') {
+    return;
+  }
+
+  const oldImage = record.dynamodb?.OldImage as StreamImage | undefined;
+  const newImage = record.dynamodb?.NewImage as StreamImage | undefined;
+
+  const oldInfo = extractWorkflowInfo(oldImage);
+  const newInfo = extractWorkflowInfo(newImage);
+
+  if (!oldInfo || !newInfo) {
+    return;
+  }
+
+  if (oldInfo.status === newInfo.status) {
+    return;
+  }
+
+  console.log(
+    `Workflow ${newInfo.workflowId} status changed: ${oldInfo.status} -> ${newInfo.status}`,
+  );
+
+  const connectionIds = await getConnectionIdsByProject(newInfo.projectId);
+  if (connectionIds.length === 0) {
+    console.log(
+      `No connections subscribed to project ${newInfo.projectId}, skipping`,
+    );
+    return;
+  }
+
+  const message: WorkflowMessage = {
+    action: 'workflow',
+    data: {
+      event: 'status_changed',
+      workflowId: newInfo.workflowId,
+      documentId: newInfo.documentId,
+      projectId: newInfo.projectId,
+      status: newInfo.status,
+      previousStatus: oldInfo.status,
+      timestamp: new Date().toISOString(),
+    },
+  };
+
+  const messageStr = JSON.stringify(message);
+  console.log(
+    `Sending workflow message to ${connectionIds.length} connections`,
+  );
+
+  await Promise.all(
+    connectionIds.map((connectionId) =>
+      sendToConnection(connectionId, messageStr),
+    ),
+  );
+}
+
+async function processStepRecord(record: DynamoDBRecord): Promise<void> {
+  if (record.eventName !== 'MODIFY') {
+    return;
+  }
+
+  const oldImage = record.dynamodb?.OldImage as StreamImage | undefined;
+  const newImage = record.dynamodb?.NewImage as StreamImage | undefined;
+
+  const oldInfo = extractStepInfo(oldImage);
+  const newInfo = extractStepInfo(newImage);
+
+  if (!oldInfo || !newInfo) {
+    return;
+  }
+
+  const changedSteps = findChangedSteps(oldInfo.steps, newInfo.steps);
+
+  // Check qa_regen changes
+  const qaRegenChanged =
+    JSON.stringify(oldInfo.qaRegen) !== JSON.stringify(newInfo.qaRegen);
+
+  if (changedSteps.length === 0 && !qaRegenChanged) {
+    return;
+  }
+
+  if (changedSteps.length > 0) {
+    console.log(
+      `Workflow ${newInfo.workflowId} steps changed:`,
+      changedSteps
+        .map((c) => `${c.stepName}: ${c.oldStatus} -> ${c.newStatus}`)
+        .join(', '),
+    );
+  }
+  if (qaRegenChanged) {
+    console.log(
+      `Workflow ${newInfo.workflowId} qa_regen changed:`,
+      JSON.stringify(oldInfo.qaRegen),
+      '->',
+      JSON.stringify(newInfo.qaRegen),
+    );
+  }
+
+  const connectionIds = await getConnectionIdsByProject(newInfo.projectId);
+  if (connectionIds.length === 0) {
+    console.log(
+      `No connections subscribed to project ${newInfo.projectId}, skipping`,
+    );
+    return;
+  }
+
+  // Send a message for each changed step
+  for (const change of changedSteps) {
+    const message: StepMessage = {
+      action: 'step',
+      data: {
+        event: 'step_changed',
+        workflowId: newInfo.workflowId,
+        documentId: newInfo.documentId,
+        projectId: newInfo.projectId,
+        stepName: change.stepName,
+        status: change.newStatus,
+        previousStatus: change.oldStatus,
+        currentStep: newInfo.currentStep,
+        timestamp: new Date().toISOString(),
+      },
+    };
+
+    const messageStr = JSON.stringify(message);
+    console.log(
+      `Sending step message: ${change.stepName} -> ${change.newStatus}`,
+    );
+
+    await Promise.all(
+      connectionIds.map((connectionId) =>
+        sendToConnection(connectionId, messageStr),
+      ),
+    );
+  }
+
+  // Send qa_regen change as step_changed event for segment_analyzer
+  if (qaRegenChanged && changedSteps.length === 0) {
+    const message: StepMessage = {
+      action: 'step',
+      data: {
+        event: 'step_changed',
+        workflowId: newInfo.workflowId,
+        documentId: newInfo.documentId,
+        projectId: newInfo.projectId,
+        stepName: 'segment_analyzer',
+        status: newInfo.steps['segment_analyzer'] || 'completed',
+        currentStep: newInfo.currentStep,
+        timestamp: new Date().toISOString(),
+      },
+    };
+
+    const messageStr = JSON.stringify(message);
+    console.log('Sending qa_regen change as step_changed event');
+
+    await Promise.all(
+      connectionIds.map((connectionId) =>
+        sendToConnection(connectionId, messageStr),
+      ),
+    );
+  }
+}
+
+async function processDocumentDeletion(record: DynamoDBRecord): Promise<void> {
+  const oldImage = record.dynamodb?.OldImage as StreamImage | undefined;
+  if (!oldImage) return;
+
+  const pk = oldImage.PK?.S || '';
+  const sk = oldImage.SK?.S || '';
+  const projectId = pk.startsWith('PROJ#') ? pk.slice(5) : '';
+  const documentId = sk.startsWith('DOC#') ? sk.slice(4) : '';
+
+  if (!projectId || !documentId) return;
+
+  console.log(`Document ${documentId} deleted from project ${projectId}`);
+
+  const connectionIds = await getConnectionIdsByProject(projectId);
+  if (connectionIds.length === 0) {
+    console.log(`No connections subscribed to project ${projectId}, skipping`);
+    return;
+  }
+
+  const message: DocumentMessage = {
+    action: 'document',
+    data: {
+      event: 'deleted',
+      documentId,
+      projectId,
+      timestamp: new Date().toISOString(),
+    },
+  };
+
+  const messageStr = JSON.stringify(message);
+  console.log(
+    `Sending document deletion message to ${connectionIds.length} connections`,
+  );
+
+  await Promise.all(
+    connectionIds.map((connectionId) =>
+      sendToConnection(connectionId, messageStr),
+    ),
+  );
+}
+
+function isDocumentRecord(image: StreamImage | undefined): boolean {
+  if (!image) return false;
+  const pk = image.PK?.S || '';
+  const sk = image.SK?.S || '';
+  return pk.startsWith('PROJ#') && sk.startsWith('DOC#');
+}
+
+async function processRecord(record: DynamoDBRecord): Promise<void> {
+  if (record.eventName === 'REMOVE') {
+    const oldImage = record.dynamodb?.OldImage as StreamImage | undefined;
+    if (isDocumentRecord(oldImage)) {
+      await processDocumentDeletion(record);
+    }
+    return;
+  }
+
+  const newImage = record.dynamodb?.NewImage as StreamImage | undefined;
+  const recordType = getRecordType(newImage);
+
+  switch (recordType) {
+    case 'workflow':
+      await processWorkflowRecord(record);
+      break;
+    case 'step':
+      await processStepRecord(record);
+      break;
+    default:
+      break;
+  }
+}
+
+export const handler: DynamoDBStreamHandler = async (event) => {
+  console.log(`Processing ${event.Records.length} records`);
+
+  for (const record of event.Records) {
+    try {
+      await processRecord(record);
+    } catch (error) {
+      console.error('Error processing record:', error);
+    }
+  }
+};

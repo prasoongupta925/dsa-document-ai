@@ -1,0 +1,244 @@
+import { Duration, Stack, StackProps } from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as cr from 'aws-cdk-lib/custom-resources';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as path from 'path';
+import * as fs from 'fs';
+import { fileURLToPath } from 'url';
+import {
+  SSM_KEYS,
+  PADDLEOCR_ENDPOINT_NAME_VALUE,
+  getRetentionDays,
+} from ':idp-v2/common-constructs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+/**
+ * EventStack - S3 EventBridge, SQS Queues, Type Detection Lambda
+ *
+ * Handles document upload events and distributes to preprocessing queues.
+ */
+export class EventStack extends Stack {
+  public readonly workflowQueue: sqs.Queue;
+
+  constructor(scope: Construct, id: string, props?: StackProps) {
+    super(scope, id, props);
+
+    // ========================================
+    // Lookup Existing Resources (from SSM)
+    // ========================================
+
+    const documentBucketName = ssm.StringParameter.valueForStringParameter(
+      this,
+      SSM_KEYS.DOCUMENT_STORAGE_BUCKET_NAME,
+    );
+    const documentBucket = s3.Bucket.fromBucketName(
+      this,
+      'DocumentBucket',
+      documentBucketName,
+    );
+
+    const backendTableName = ssm.StringParameter.valueForStringParameter(
+      this,
+      SSM_KEYS.BACKEND_TABLE_NAME,
+    );
+    const backendTable = dynamodb.Table.fromTableName(
+      this,
+      'BackendTable',
+      backendTableName,
+    );
+
+    // ========================================
+    // SQS Queues with Dead Letter Queues
+    // ========================================
+
+    // Retention: the DLQ keeps messages at most retentionDays (SQS max 14).
+    // The main queues keep the SQS default of 4 days, which is <= 7.
+
+    // Workflow Queue (for Step Functions to consume)
+    const workflowDlq = new sqs.Queue(this, 'WorkflowDLQ', {
+      queueName: 'idp-v2-workflow-dlq',
+      retentionPeriod: Duration.days(Math.min(getRetentionDays(this), 14)),
+    });
+    this.workflowQueue = new sqs.Queue(this, 'WorkflowQueue', {
+      queueName: 'idp-v2-workflow-queue',
+      visibilityTimeout: Duration.minutes(15),
+      deadLetterQueue: {
+        queue: workflowDlq,
+        maxReceiveCount: 3,
+      },
+    });
+
+    // ========================================
+    // Store Queue URLs in SSM
+    // ========================================
+
+    new ssm.StringParameter(this, 'WorkflowQueueUrlParam', {
+      parameterName: SSM_KEYS.PREPROCESS_WORKFLOW_QUEUE_URL,
+      stringValue: this.workflowQueue.queueUrl,
+    });
+
+    new ssm.StringParameter(this, 'WorkflowQueueArnParam', {
+      parameterName: '/idp-v2/preprocess/workflow/queue-arn',
+      stringValue: this.workflowQueue.queueArn,
+    });
+
+    // ========================================
+    // Trigger Queue for EventBridge
+    // ========================================
+
+    const triggerQueue = new sqs.Queue(this, 'TriggerQueue', {
+      queueName: 'idp-v2-preprocessing-trigger-queue',
+      visibilityTimeout: Duration.minutes(5),
+    });
+
+    // ========================================
+    // Enable EventBridge notifications on S3 bucket
+    // ========================================
+
+    new cr.AwsCustomResource(this, 'EnableS3EventBridge', {
+      onCreate: {
+        service: 'S3',
+        action: 'putBucketNotificationConfiguration',
+        parameters: {
+          Bucket: documentBucketName,
+          NotificationConfiguration: {
+            EventBridgeConfiguration: {},
+          },
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(
+          `${documentBucketName}-eventbridge-preprocessing`,
+        ),
+      },
+      onUpdate: {
+        service: 'S3',
+        action: 'putBucketNotificationConfiguration',
+        parameters: {
+          Bucket: documentBucketName,
+          NotificationConfiguration: {
+            EventBridgeConfiguration: {},
+          },
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(
+          `${documentBucketName}-eventbridge-preprocessing`,
+        ),
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: [
+            's3:PutBucketNotification',
+            's3:PutBucketNotificationConfiguration',
+            's3:GetBucketNotification',
+            's3:GetBucketNotificationConfiguration',
+          ],
+          resources: [documentBucket.bucketArn],
+        }),
+      ]),
+    });
+
+    // ========================================
+    // EventBridge Rule for S3 Upload
+    // ========================================
+
+    new events.Rule(this, 'S3UploadPreprocessRule', {
+      ruleName: 'idp-v2-s3-upload-preprocess',
+      description: 'Trigger preprocessing on S3 upload',
+      eventPattern: {
+        source: ['aws.s3'],
+        detailType: ['Object Created'],
+        detail: {
+          bucket: {
+            name: [documentBucketName],
+          },
+          object: {
+            key: [
+              {
+                'anything-but': {
+                  wildcard: 'projects/*/documents/*/*/*',
+                },
+              },
+            ],
+          },
+        },
+      },
+      targets: [new targets.SqsQueue(triggerQueue)],
+    });
+
+    // ========================================
+    // Shared Code Layer
+    // ========================================
+
+    const sharedLayer = new lambda.LayerVersion(this, 'SharedCodeLayer', {
+      layerVersionName: 'idp-v2-event-shared',
+      description: 'Shared Python modules for event processing',
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_14],
+      compatibleArchitectures: [lambda.Architecture.ARM_64],
+      code: lambda.Code.fromAsset(path.join(__dirname, '../functions'), {
+        bundling: {
+          image: lambda.Runtime.PYTHON_3_14.bundlingImage,
+          command: [],
+          local: {
+            tryBundle(outputDir: string): boolean {
+              const pythonDir = path.join(outputDir, 'python');
+              const sharedSrc = path.join(__dirname, '../functions/shared');
+              const sharedDst = path.join(pythonDir, 'shared');
+              fs.mkdirSync(sharedDst, { recursive: true });
+              fs.cpSync(sharedSrc, sharedDst, { recursive: true });
+              return true;
+            },
+          },
+        },
+      }),
+    });
+
+    // ========================================
+    // Type Detection Lambda
+    // ========================================
+
+    const typeDetection = new lambda.Function(this, 'TypeDetection', {
+      functionName: 'idp-v2-type-detection',
+      runtime: lambda.Runtime.PYTHON_3_14,
+      handler: 'index.handler',
+      timeout: Duration.minutes(2),
+      memorySize: 512,
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, '../functions/preprocessing/type-detection'),
+      ),
+      layers: [sharedLayer],
+      environment: {
+        BACKEND_TABLE_NAME: backendTableName,
+        WORKFLOW_QUEUE_URL: this.workflowQueue.queueUrl,
+        SAGEMAKER_ENDPOINT_NAME: PADDLEOCR_ENDPOINT_NAME_VALUE,
+      },
+    });
+
+    // Grant permissions
+    backendTable.grantReadWriteData(typeDetection);
+    documentBucket.grantRead(typeDetection);
+    this.workflowQueue.grantSendMessages(typeDetection);
+
+    // Grant permission to trigger SageMaker scale-out
+    typeDetection.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['application-autoscaling:RegisterScalableTarget'],
+        resources: ['*'],
+      }),
+    );
+
+    // Trigger from SQS
+    typeDetection.addEventSource(
+      new lambdaEventSources.SqsEventSource(triggerQueue, {
+        batchSize: 1,
+      }),
+    );
+  }
+}

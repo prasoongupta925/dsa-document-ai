@@ -1,0 +1,29 @@
+system: |
+  You are a core entity builder for a knowledge graph.
+  Given a list of entities extracted from different pages of a document,
+  define core entities that group related concepts together.
+
+  Core entities serve as connection hubs between pages.
+  Each core entity absorbs the page connections (mentioned_in) of all its members.
+
+  ## Rules
+  - One entity can belong to multiple core entities
+  - Group liberally — it is better to over-connect than to miss connections
+  - Grouping criteria: notation variants, morphological variants,
+    conceptual containment, abbreviations, cross-language variants
+  - Do NOT group entities with different identifiers (IDs, serial numbers)
+  - Entities that don't fit any group should be omitted
+
+  ## Core entity naming
+  - Use one of the member names OR a well-known standard term
+  - Do NOT invent new labels that don't exist in the input or common vocabulary
+
+user: |
+  Define core entities from this list. Each entity can belong to multiple groups.
+  If existing core entities are provided, reuse their names when the new entities match.
+
+  New entities:
+  {entities}
+
+  Existing core entities (from other documents in this project):
+  {existing_keywords}

@@ -1,0 +1,17 @@
+[project]
+name = "idp_v2.research-agent"
+version = "0.1.0"
+description = "Research Agent - Long running"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "mcp>=1.26.0,<2",
+    "aws-opentelemetry-distro>=0.15.0",
+    "bedrock-agentcore>=1.3.2",
+    "boto3>=1.42.55",
+    "nanoid>=2.0.0",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "strands-agents>=1.27.0",
+    "strands-agents-tools>=0.2.21",
+]

@@ -1,0 +1,498 @@
+"""Segment Prep Lambda
+
+Prepares segment metadata for downstream processing.
+
+Supported formats:
+- PDF: Render each page to PNG, create segment metadata
+- Image: Use original file, create single segment metadata
+- Video: Create single segment metadata (no image)
+
+Output structure:
+  s3://bucket/{base_path}/preprocessed/
+    metadata.json - segment info
+    page_0000.png - page images (for PDF)
+"""
+import io
+import json
+import os
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlparse
+
+import pypdfium2 as pdfium
+from PIL import Image
+
+# Pages per batch for parallel rendering via Step Functions Map
+RENDER_BATCH_SIZE = int(os.environ.get('RENDER_BATCH_SIZE', '500'))
+
+from shared.ddb_client import (
+    record_step_start,
+    record_step_complete,
+    record_step_error,
+    update_workflow_status,
+    update_workflow_total_segments,
+    get_entity_prefix,
+        WorkflowStatus,
+    StepName,
+)
+from shared.s3_analysis import (
+    get_s3_client,
+    parse_s3_uri,
+    save_segment_analysis,
+    SegmentStatus,
+)
+
+# Image quality settings for PDF rendering
+PDF_DPI = 150  # DPI for PDF page rendering
+
+# Supported PDF extensions
+PDF_EXTENSIONS = {'.pdf'}
+
+# Supported image extensions
+IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.tiff', '.tif', '.webp', '.bmp'}
+
+# Supported video extensions
+VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
+
+# Supported audio extensions
+AUDIO_EXTENSIONS = {'.mp3', '.wav', '.flac', '.aac', '.m4a', '.ogg', '.wma'}
+
+# Web request extension
+WEBREQ_EXTENSIONS = {'.webreq'}
+
+# Presentation extensions
+PPTX_EXTENSIONS = {'.pptx', '.ppt'}
+
+# Text-based document extensions (no image generation needed)
+DOCX_EXTENSIONS = {'.docx', '.doc'}
+MARKDOWN_EXTENSIONS = {'.md', '.markdown'}
+TEXT_EXTENSIONS = {'.txt'}
+
+# Spreadsheet extensions
+SPREADSHEET_EXTENSIONS = {'.xlsx', '.xls', '.csv'}
+
+# DXF (CAD exchange format) extensions
+DXF_EXTENSIONS = {'.dxf'}
+
+
+def get_file_extension(file_uri: str) -> str:
+    """Get lowercase file extension from URI."""
+    path = urlparse(file_uri).path
+    ext_idx = path.rfind('.')
+    if ext_idx == -1:
+        return ''
+    return path[ext_idx:].lower()
+
+
+def get_document_base_path(file_uri: str) -> tuple[str, str]:
+    """Extract bucket and document base path from file URI."""
+    bucket, key = parse_s3_uri(file_uri)
+    key_parts = key.split('/')
+
+    # Find documents folder and include document_id
+    if 'documents' in key_parts:
+        doc_idx = key_parts.index('documents')
+        base_path = '/'.join(key_parts[:doc_idx + 2])
+    else:
+        base_path = '/'.join(key_parts[:-1])
+
+    return bucket, base_path
+
+
+def download_file_from_s3(uri: str, local_path: str):
+    """Download file from S3 to local path."""
+    client = get_s3_client()
+    bucket, key = parse_s3_uri(uri)
+    client.download_file(bucket, key, local_path)
+
+
+def upload_image_to_s3(bucket: str, key: str, image_bytes: bytes, content_type: str = 'image/png'):
+    """Upload image bytes to S3."""
+    client = get_s3_client()
+    client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=image_bytes,
+        ContentType=content_type
+    )
+
+
+def save_metadata_to_s3(bucket: str, base_path: str, metadata: dict):
+    """Save preprocessor metadata to S3."""
+    client = get_s3_client()
+    key = f'{base_path}/preprocessed/metadata.json'
+    client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=json.dumps(metadata, ensure_ascii=False, indent=2),
+        ContentType='application/json'
+    )
+    return f's3://{bucket}/{key}'
+
+
+def process_pdf(file_uri: str, bucket: str, base_path: str) -> list[dict]:
+    """Count PDF pages and create segments with predictable image_uri paths (no rendering)."""
+    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        download_file_from_s3(file_uri, tmp_path)
+        doc = pdfium.PdfDocument(tmp_path)
+        page_count = len(doc)
+        doc.close()
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    print(f'PDF has {page_count} pages (rendering deferred to Map)')
+
+    segments = []
+    for page_num in range(page_count):
+        image_key = f'{base_path}/preprocessed/page_{page_num:04d}.png'
+        segments.append({
+            'segment_index': page_num,
+            'segment_type': 'PAGE',
+            'image_uri': f's3://{bucket}/{image_key}',
+        })
+
+    return segments
+
+
+def handle_render_pages(event):
+    """Render a batch of PDF pages and upload to S3. Called by Step Functions Map."""
+    file_uri = event['file_uri']
+    start_page = event['start_page']
+    end_page = event['end_page']
+
+    bucket, base_path = get_document_base_path(file_uri)
+    scale = PDF_DPI / 72
+
+    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        download_file_from_s3(file_uri, tmp_path)
+        doc = pdfium.PdfDocument(tmp_path)
+        rendered = 0
+
+        for page_num in range(start_page, end_page):
+            page = doc[page_num]
+            bitmap = page.render(scale=scale)
+            img = bitmap.to_pil()
+
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            png_bytes = buf.getvalue()
+
+            image_key = f'{base_path}/preprocessed/page_{page_num:04d}.png'
+            upload_image_to_s3(bucket, image_key, png_bytes)
+
+            bitmap.close()
+            page.close()
+            rendered += 1
+
+            if rendered % 100 == 0:
+                print(f'Rendered {rendered}/{end_page - start_page} pages (page {page_num})')
+
+        doc.close()
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    print(f'Rendered pages {start_page}-{end_page - 1} ({rendered} pages)')
+    return {'start_page': start_page, 'end_page': end_page, 'rendered': rendered}
+
+
+def process_image(file_uri: str, bucket: str, base_path: str) -> list[dict]:
+    """Process image file: use original file as single segment (no copy)."""
+    ext = get_file_extension(file_uri)
+
+    # Get image dimensions
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        download_file_from_s3(file_uri, tmp_path)
+        with Image.open(tmp_path) as img:
+            width, height = img.size
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    print(f'Using original image: {file_uri}')
+
+    return [{
+        'segment_index': 0,
+        'segment_type': 'PAGE',
+        'image_uri': file_uri,  # Use original file directly
+        'width': width,
+        'height': height
+    }]
+
+
+def process_video(file_uri: str) -> list[dict]:
+    """Process video file: create single segment for entire video (no splitting)."""
+    return [{
+        'segment_index': 0,
+        'segment_type': 'VIDEO',
+        'file_uri': file_uri,
+    }]
+
+
+def process_audio(file_uri: str) -> list[dict]:
+    """Process audio file: create single segment for entire audio (no splitting)."""
+    return [{
+        'segment_index': 0,
+        'segment_type': 'AUDIO',
+        'file_uri': file_uri,
+    }]
+
+
+def process_webreq(file_uri: str, bucket: str, base_path: str) -> list[dict]:
+    """Process .webreq file: create single WEB type placeholder segment.
+
+    Actual segment count may be overridden by segment-builder based on
+    webcrawler agent's multi-page output.
+    """
+    return [{
+        'segment_index': 0,
+        'segment_type': 'WEB',
+        'image_uri': '',
+        'file_uri': file_uri,
+    }]
+
+
+def prepare_text_segments(file_uri: str, file_type: str) -> list[dict]:
+    """Prepare placeholder segments for text files.
+
+    Estimates chunk count from file size. Actual text extraction
+    is done by format-parser, and text_content is merged by segment-builder.
+    """
+    client = get_s3_client()
+    bucket, key = parse_s3_uri(file_uri)
+
+    # Get file size to estimate chunk count
+    try:
+        response = client.head_object(Bucket=bucket, Key=key)
+        file_size = response['ContentLength']
+    except Exception as e:
+        print(f'Error getting file size: {e}')
+        file_size = 0
+
+    # Don't estimate - just create 1 placeholder segment
+    # format-parser will determine actual chunk count, segment-builder will use it
+    estimated_chunks = 1
+    print(f'Text file size: {file_size} bytes, creating 1 placeholder segment')
+
+    # Create placeholder segments (text_content will be filled by segment-builder)
+    segments = []
+    for i in range(estimated_chunks):
+        segments.append({
+            'segment_index': i,
+            'segment_type': 'TEXT',
+            'file_uri': file_uri,
+            # text_content will be populated by segment-builder from format-parser result
+        })
+
+    return segments
+
+
+# Keep for backward compatibility but mark as deprecated
+def process_docx(file_uri: str, bucket: str, base_path: str) -> list[dict]:
+    """DEPRECATED: Use prepare_text_segments instead."""
+    return prepare_text_segments(file_uri, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+
+
+def process_markdown(file_uri: str, bucket: str, base_path: str) -> list[dict]:
+    """DEPRECATED: Use prepare_text_segments instead."""
+    return prepare_text_segments(file_uri, 'text/markdown')
+
+
+def process_text_file(file_uri: str, bucket: str, base_path: str) -> list[dict]:
+    """DEPRECATED: Use prepare_text_segments instead."""
+    return prepare_text_segments(file_uri, 'text/plain')
+
+
+def is_office_document_type(file_type: str) -> bool:
+    """Check if file type is a presentation, Word document, or DXF (rendered via format-parser)."""
+    return file_type in (
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'application/vnd.ms-powerpoint',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/msword',
+        'application/dxf',
+        'image/vnd.dxf',
+    )
+
+
+def is_spreadsheet_type(file_type: str) -> bool:
+    """Check if file type is a spreadsheet (xlsx, xls, csv)."""
+    return file_type in (
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-excel',
+        'text/csv',
+    )
+
+
+def prepare_presentation_segments(file_uri: str) -> list[dict]:
+    """Prepare placeholder segment for presentation files.
+
+    Creates 1 placeholder PAGE segment. Actual slide count is determined
+    by format-parser, and segment-builder will override with real data.
+    """
+    print('Creating 1 placeholder segment for presentation')
+    return [{
+        'segment_index': 0,
+        'segment_type': 'PAGE',
+        'image_uri': '',
+        'file_uri': file_uri,
+    }]
+
+
+def handler(event, _context):
+    print(f'Event: {json.dumps(event)}')
+
+    # Render pages mode (called by Step Functions Map)
+    if event.get('mode') == 'render_pages':
+        return handle_render_pages(event)
+
+    workflow_id = event.get('workflow_id')
+    document_id = event.get('document_id')
+    file_uri = event.get('file_uri')
+    file_type = event.get('file_type', '')
+
+    record_step_start(workflow_id, StepName.SEGMENT_PREP)
+
+    try:
+        bucket, base_path = get_document_base_path(file_uri)
+        ext = get_file_extension(file_uri)
+
+        # Determine file type and process accordingly
+        if ext in WEBREQ_EXTENSIONS or file_type == 'application/x-webreq':
+            print('Processing as web request')
+            segments = process_webreq(file_uri, bucket, base_path)
+        elif ext in PPTX_EXTENSIONS or ext in DOCX_EXTENSIONS or ext in DXF_EXTENSIONS or is_office_document_type(file_type):
+            print('Processing as office document')
+            segments = prepare_presentation_segments(file_uri)
+        elif ext in PDF_EXTENSIONS or file_type == 'application/pdf':
+            print('Processing as PDF')
+            segments = process_pdf(file_uri, bucket, base_path)
+        elif ext in IMAGE_EXTENSIONS or file_type.startswith('image/'):
+            print('Processing as image')
+            segments = process_image(file_uri, bucket, base_path)
+        elif ext in VIDEO_EXTENSIONS or file_type.startswith('video/'):
+            print('Processing as video')
+            segments = process_video(file_uri)
+        elif ext in AUDIO_EXTENSIONS or file_type.startswith('audio/'):
+            print('Processing as audio')
+            segments = process_audio(file_uri)
+        elif ext in SPREADSHEET_EXTENSIONS or is_spreadsheet_type(file_type):
+            print('Processing as spreadsheet')
+            segments = prepare_text_segments(file_uri, file_type)
+        elif ext in MARKDOWN_EXTENSIONS or file_type == 'text/markdown':
+            print('Processing as Markdown')
+            segments = process_markdown(file_uri, bucket, base_path)
+        elif ext in TEXT_EXTENSIONS or file_type == 'text/plain':
+            print('Processing as text file')
+            segments = process_text_file(file_uri, bucket, base_path)
+        else:
+            # Unknown type - treat as single segment
+            print(f'Unknown file type: {file_type}, ext: {ext}. Treating as single segment.')
+            segments = [{
+                'segment_index': 0,
+                'segment_type': 'UNKNOWN',
+                'image_uri': '',
+                'file_uri': file_uri
+            }]
+
+        # Save metadata (for internal use)
+        metadata = {
+            'segments': segments,
+            'segment_count': len(segments),
+            'file_uri': file_uri,
+            'file_type': file_type
+        }
+        metadata_uri = save_metadata_to_s3(bucket, base_path, metadata)
+        print(f'Saved metadata to {metadata_uri}')
+
+        # Create initial segment analysis files (so frontend can show images immediately)
+        def _create_segment(seg):
+            segment_type = seg.get('segment_type', 'PAGE')
+            segment_data = {
+                'segment_index': seg['segment_index'],
+                'segment_type': segment_type,
+                'image_uri': seg.get('image_uri', ''),
+                'width': seg.get('width'),
+                'height': seg.get('height'),
+                'status': SegmentStatus.INDEXING,
+                'bda_indexer': '',
+                'paddleocr': '',
+                'paddleocr_blocks': None,
+                'format_parser': '',
+                'ai_analysis': [],
+            }
+            if segment_type in ('VIDEO', 'AUDIO'):
+                segment_data['file_uri'] = seg.get('file_uri', file_uri)
+                segment_data['transcribe'] = ''
+                segment_data['transcribe_segments'] = []
+            if segment_type == 'WEB':
+                segment_data['file_uri'] = seg.get('file_uri', file_uri)
+                segment_data['webcrawler_content'] = ''
+                segment_data['source_url'] = ''
+                segment_data['page_title'] = ''
+            if segment_type == 'TEXT':
+                segment_data['file_uri'] = seg.get('file_uri', file_uri)
+                segment_data['text_content'] = seg.get('text_content', '')
+                segment_data['chunk_uri'] = seg.get('chunk_uri', '')
+                segment_data['format_parser'] = seg.get('text_content', '')
+            save_segment_analysis(file_uri, seg['segment_index'], segment_data)
+
+        if len(segments) > 100:
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                list(executor.map(_create_segment, segments))
+            print(f'Created {len(segments)} initial segments (parallel)')
+        else:
+            for seg in segments:
+                _create_segment(seg)
+            print(f'Created {len(segments)} initial segments')
+
+        # Update workflow total_segments in DynamoDB
+        entity_type = get_entity_prefix(file_type)
+        update_workflow_total_segments(document_id, workflow_id, len(segments), entity_type)
+
+        is_pdf = (ext in PDF_EXTENSIONS or file_type == 'application/pdf') and len(segments) > 0
+
+        result = {
+            **event,
+            'preprocessor_metadata_uri': metadata_uri,
+            'segment_count': len(segments),
+            'render_needed': False,
+        }
+
+        if is_pdf:
+            # PDF: defer step_complete to finalize_prep (after rendering Map)
+            render_batches = []
+            for i in range(0, len(segments), RENDER_BATCH_SIZE):
+                render_batches.append({
+                    'start_page': i,
+                    'end_page': min(i + RENDER_BATCH_SIZE, len(segments)),
+                })
+            result['render_needed'] = True
+            result['render_batches'] = render_batches
+            print(f'Created {len(render_batches)} render batches')
+        else:
+            record_step_complete(
+                workflow_id,
+                StepName.SEGMENT_PREP,
+                segment_count=len(segments)
+            )
+
+        return result
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f'Error in segment-prep: {error_msg}')
+        record_step_error(workflow_id, StepName.SEGMENT_PREP, error_msg)
+        entity_type = get_entity_prefix(file_type)
+        update_workflow_status(document_id, workflow_id, WorkflowStatus.FAILED, entity_type=entity_type, error=error_msg)
+        raise

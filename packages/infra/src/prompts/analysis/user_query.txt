@@ -1,0 +1,93 @@
+Analyze document segment (page {segment_index}).
+
+<upstream_processor_results>
+The following was extracted by automated processors. Use as reference but verify against the image. The image is the authoritative source. Processors frequently miss content, garble non-Latin text, and misread small or low-contrast text.
+
+{context}
+</upstream_processor_results>
+
+<instructions>
+You can see the document image directly.
+
+**Step 1: ASSESS**
+Look at the image. Is this a page with content that needs extraction, or a blank/decorative/divider page?
+- If no content to extract: describe the page briefly (1-2 sentences) and stop. Do not use the full output format below.
+- If content exists: proceed to Step 2.
+
+**Step 2: EXTRACT**
+Go through the entire page systematically. Extract every content zone from top to bottom, left to right.
+
+For each zone you see:
+1. Read the content from the image.
+2. Check the upstream processor results for the same area.
+3. If the processors got it right, reproduce the content.
+4. If the processors got it wrong (garbled text, wrong characters, missing content), correct it using what you see in the image.
+5. If the processors missed it entirely, add it.
+
+Do NOT stop after one or two sections. Do NOT skip content because it seems routine. Cover the entire page.
+
+**Step 3: ANALYZE (if needed)**
+After extraction is complete, add analysis only if it provides value beyond the raw extraction:
+- Interpretation of data, relationships, or domain-specific significance
+- Anomalies, inconsistencies, or items that need attention
+- Brief summary of key findings for search indexing
+
+Skip this step if the extraction is self-explanatory.
+</instructions>
+
+<output_format>
+Provide your output in this structure:
+
+## Original Text
+[Complete reproduction of all text on the page, exactly as it appears]
+
+Requirements:
+- Reproduce every text element: titles, headings, body text, table content, captions, labels, annotations, headers, footers, fine print, stamps
+- Use markdown tables for tabular data - preserve all rows, columns, and cell values
+- Use heading hierarchy (##, ###) that mirrors the document's section structure
+- Preserve original formatting: lists, numbering, indentation
+- Do NOT translate, summarize, or paraphrase
+- Mark unclear text as [illegible] or [uncertain: best guess]
+
+## Document Overview
+- **Type**: [Specific document classification - e.g., "VAT invoice", "engineering drawing", "employment contract"]
+- **Purpose**: [What this page conveys]
+
+## Visual Elements
+[Include this section when the page contains figures, charts, diagrams, drawings, photos, or other non-text visual content. Skip for text-only pages.]
+
+For each visual element:
+- What it depicts (subject, components, structure)
+- Key details visible (colors, labels, spatial relationships, connections between parts)
+- How multiple views relate to each other (e.g., plan view, elevation, cross-section, 3D perspective)
+
+This section is for describing what you SEE, not what you read. The text content belongs in Original Text above.
+
+## Key Information
+[Bullet list of the most important searchable data points from this page]
+- Every name, date, amount, identifier, reference number
+- Key terms, conditions, specifications
+- Focus on facts that users would search for
+
+## Analysis Notes
+[Include only if applicable]
+- **Uncertainties**: [Areas where you are not fully confident in the extraction]
+
+Do NOT report upstream processor errors, OCR corrections, or what you fixed from the processor results. Just output the correct content silently.
+</output_format>
+
+<quality_checklist>
+Before finishing, verify:
+- Did I extract content from every section of the page, top to bottom?
+- Did I reproduce all table data with every row and column?
+- Did I include headers, footers, and fine print?
+- Did I capture all numbers, dates, and identifiers exactly as shown?
+- Did I note where upstream processors made errors?
+- For the document type I identified, did I extract the core content? (e.g., for an invoice: all line items and amounts; for a contract: all parties and terms)
+</quality_checklist>
+
+<language_requirement>
+Provide ALL section headers, descriptions, and analysis notes in {language}.
+Preserve original document text exactly as written - do not translate extracted text.
+Use appropriate technical terminology for the document's domain.
+</language_requirement>

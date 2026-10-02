@@ -1,0 +1,26 @@
+Extract and verify the complete speech transcript from this video.{timecode_info}
+
+{stt_section}
+
+<instructions>
+1. Listen carefully to all speech in the video segment.
+2. Compare with the upstream STT results (if provided) and correct any errors.
+3. Fill in any missing speech that the STT system failed to capture.
+4. Mark genuinely inaudible sections as [inaudible].
+5. Preserve speaker changes and natural paragraph breaks.
+6. Output the COMPLETE transcript - do not summarize or skip any speech.
+7. Do NOT include any correction notes, analysis notes, or meta-commentary about the STT results.
+
+Output format:
+- Provide ONLY the transcript text. No corrections list, no notes, no explanations.
+- If the target analysis language ({language}) differs from the spoken language, provide a translation after the original.
+- If the spoken language is the same as {language}, provide the transcript once only.
+
+Structure your output as:
+
+## Transcript (Original)
+[Full transcript in the original spoken language - just the speech text, nothing else]
+
+## Transcript ({language})
+[Translation in {language} - ONLY include this section if the spoken language differs from {language}]
+</instructions>

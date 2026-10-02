@@ -1,0 +1,26 @@
+{
+  "name": "@idp-v2/websocket-broker",
+  "version": "1.0.0",
+  "description": "SQS message broker for WebSocket API Gateway",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.1015.0",
+    "@aws-sdk/client-dynamodb": "^3.1015.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^22.19.1",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.9"
+  },
+  "packageManager": "pnpm@10.12.4"
+}

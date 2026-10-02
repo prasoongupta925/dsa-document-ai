@@ -1,0 +1,437 @@
+import base64
+import io
+import json
+import os
+import tempfile
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+
+import boto3
+import yaml
+from PIL import Image
+
+from shared.ddb_client import get_steps, get_table, now_iso
+from shared.s3_analysis import get_segment_analysis, save_segment_analysis
+
+BEDROCK_MODEL_ID = os.environ['BEDROCK_MODEL_ID']
+LANCEDB_FUNCTION_NAME = os.environ.get('LANCEDB_FUNCTION_NAME', 'idp-v2-lance-service')
+GRAPH_SERVICE_FUNCTION_NAME = os.environ.get('GRAPH_SERVICE_FUNCTION_NAME', '')
+ENTITY_EXTRACTOR_FUNCTION_NAME = os.environ.get('ENTITY_EXTRACTOR_FUNCTION_NAME', '')
+
+s3_client = None
+bedrock_client = None
+lambda_client = None
+
+
+def get_s3_client():
+    global s3_client
+    if s3_client is None:
+        s3_client = boto3.client('s3', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+    return s3_client
+
+
+def get_bedrock_client():
+    global bedrock_client
+    if bedrock_client is None:
+        bedrock_client = boto3.client('bedrock-runtime', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+    return bedrock_client
+
+
+def get_lambda_client():
+    global lambda_client
+    if lambda_client is None:
+        lambda_client = boto3.client('lambda', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+    return lambda_client
+
+
+def _load_prompt() -> str:
+    prompt_path = os.path.join(os.path.dirname(__file__), 'prompts', 'regenerate.yaml')
+    try:
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            prompts = yaml.safe_load(f)
+            return prompts.get('regenerate_prompt', '')
+    except Exception as e:
+        print(f'Error loading prompt: {e}')
+        return ''
+
+
+def _download_image(image_uri: str) -> bytes | None:
+    if not image_uri:
+        return None
+    try:
+        parsed = urlparse(image_uri)
+        bucket = parsed.netloc
+        key = parsed.path.lstrip('/')
+        client = get_s3_client()
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            client.download_file(bucket, key, tmp.name)
+            with open(tmp.name, 'rb') as f:
+                data = f.read()
+            os.unlink(tmp.name)
+            return data
+    except Exception as e:
+        print(f'Error downloading image: {e}')
+        return None
+
+
+def _detect_media_type(image_data: bytes) -> str:
+    if image_data[:8] == b'\x89PNG\r\n\x1a\n':
+        return 'image/png'
+    if image_data[:2] == b'\xff\xd8':
+        return 'image/jpeg'
+    if image_data[:4] == b'GIF8':
+        return 'image/gif'
+    if image_data[:4] == b'RIFF' and image_data[8:12] == b'WEBP':
+        return 'image/webp'
+    return 'image/png'
+
+
+def _resize_image_if_needed(image_data: bytes, max_size_mb: float = 3.5) -> bytes:
+    try:
+        max_bytes = int(max_size_mb * 1024 * 1024)
+        if len(image_data) <= max_bytes:
+            return image_data
+
+        print(f'Image size {len(image_data) / (1024 * 1024):.2f}MB exceeds limit, resizing...')
+        image = Image.open(io.BytesIO(image_data))
+        original_size = image.size
+        target_ratio = (max_bytes * 0.8 / len(image_data)) ** 0.5
+        new_width = int(original_size[0] * target_ratio)
+        new_height = int(original_size[1] * target_ratio)
+        resized_image = image.resize((new_width, new_height), Image.LANCZOS)
+
+        output_buffer = io.BytesIO()
+        if image.mode in ('RGBA', 'LA'):
+            resized_image.save(output_buffer, format='PNG', optimize=True)
+        else:
+            if resized_image.mode == 'RGBA':
+                resized_image = resized_image.convert('RGB')
+            resized_image.save(output_buffer, format='JPEG', quality=85, optimize=True)
+
+        print(f'Resized: {original_size[0]}x{original_size[1]} -> {new_width}x{new_height}')
+        return output_buffer.getvalue()
+    except Exception as e:
+        print(f'Image resize failed: {e}')
+        return image_data
+
+
+def _build_context(segment_data: dict) -> str:
+    parts = []
+    bda_indexer = segment_data.get('bda_indexer', '')
+    if bda_indexer:
+        parts.append(f'## BDA Indexer\n{bda_indexer}')
+
+    paddleocr = segment_data.get('paddleocr', '')
+    if paddleocr:
+        parts.append(f'## PaddleOCR\n{paddleocr}')
+
+    format_parser = segment_data.get('format_parser', '')
+    if format_parser:
+        parts.append(f'## Format Parser\n{format_parser}')
+
+    transcribe_segments = segment_data.get('transcribe_segments', [])
+    if transcribe_segments:
+        segments_text = []
+        for seg in transcribe_segments:
+            start = seg.get('start_time', '')
+            end = seg.get('end_time', '')
+            transcript = seg.get('transcript', '')
+            segments_text.append(f'[{start}s - {end}s] {transcript}')
+        parts.append('## Transcribe Segments\n' + '\n'.join(segments_text))
+
+    return '\n\n'.join(parts) if parts else 'No previous context available.'
+
+
+def _build_previous_qa(ai_analysis: list, qa_index: int) -> str:
+    if not ai_analysis:
+        return 'No previous Q&A.'
+    lines = []
+    for i, item in enumerate(ai_analysis):
+        if i == qa_index:
+            continue
+        query = item.get('analysis_query', '')
+        content = item.get('content', '')
+        lines.append(f'Q{i + 1}: {query}\nA{i + 1}: {content[:500]}')
+    return '\n\n'.join(lines) if lines else 'No other Q&A items.'
+
+
+def _build_qa_content(analysis_query: str, content: str) -> str:
+    """Build content string for a single QA pair."""
+    if analysis_query:
+        return f'{analysis_query}\n{content}'
+    return content
+
+
+def invoke_lancedb(action: str, params: dict) -> dict:
+    client = get_lambda_client()
+    response = client.invoke(
+        FunctionName=LANCEDB_FUNCTION_NAME,
+        InvocationType='RequestResponse',
+        Payload=json.dumps({'action': action, 'params': params})
+    )
+    payload = response['Payload'].read().decode('utf-8')
+    if 'FunctionError' in response:
+        print(f'LanceDB Lambda error: {response["FunctionError"]}, payload: {payload}')
+        return {'statusCode': 500, 'error': f'Lambda error: {payload}'}
+    return json.loads(payload)
+
+
+def invoke_entity_extractor(params: dict) -> dict:
+    if not ENTITY_EXTRACTOR_FUNCTION_NAME:
+        return {}
+    try:
+        client = get_lambda_client()
+        response = client.invoke(
+            FunctionName=ENTITY_EXTRACTOR_FUNCTION_NAME,
+            InvocationType='Event',
+            Payload=json.dumps(params),
+        )
+        print(f'Entity extractor invoked (async): status={response.get("StatusCode")}')
+        return {'success': True}
+    except Exception as e:
+        print(f'Entity extractor invoke failed: {e}')
+        return {}
+
+
+def invoke_graph_service(action: str, params: dict) -> dict:
+    if not GRAPH_SERVICE_FUNCTION_NAME:
+        return {}
+    try:
+        client = get_lambda_client()
+        response = client.invoke(
+            FunctionName=GRAPH_SERVICE_FUNCTION_NAME,
+            InvocationType='RequestResponse',
+            Payload=json.dumps({'action': action, 'params': params}),
+        )
+        payload = json.loads(response['Payload'].read())
+        if response.get('FunctionError') or payload.get('statusCode') != 200:
+            print(f'GraphService error: {payload.get("error", "Unknown")}')
+            return payload
+        return payload
+    except Exception as e:
+        print(f'GraphService invoke failed: {e}')
+        return {}
+
+
+def _set_qa_regen_status(workflow_id: str, segment_index: int, status: str):
+    """Update qa_regen sub-field in segment_analyzer step and GSI1SK."""
+    try:
+        table = get_table()
+        steps = get_steps(workflow_id)
+        if not steps:
+            return
+        data = steps.get('data', {})
+        sa = data.get('segment_analyzer', {})
+        if status == 'completed':
+            sa.pop('qa_regen', None)
+        else:
+            sa['qa_regen'] = {'status': status, 'segment_index': segment_index}
+        data['segment_analyzer'] = sa
+
+        gsi1sk = 'in_progress' if status == 'in_progress' else 'completed'
+        table.update_item(
+            Key={'PK': f'WF#{workflow_id}', 'SK': 'STEP'},
+            UpdateExpression='SET #data = :data, updated_at = :updated_at, GSI1SK = :gsi1sk',
+            ExpressionAttributeNames={'#data': 'data'},
+            ExpressionAttributeValues={
+                ':data': data,
+                ':updated_at': now_iso(),
+                ':gsi1sk': gsi1sk,
+            }
+        )
+        print(f'qa_regen updated: workflow={workflow_id}, segment={segment_index}, status={status}, GSI1SK={gsi1sk}')
+    except Exception as e:
+        print(f'Failed to update qa_regen status: {e}')
+
+
+def handler(event, _context):
+    print(f'Event: {json.dumps(event)}')
+
+    file_uri = event.get('file_uri', '')
+    segment_index = event.get('segment_index', 0)
+    qa_index = event.get('qa_index', 0)
+    raw_question = event.get('question', '')
+    # Base analysis has placeholder like "Page N Analysis" — treat as comprehensive analysis
+    is_base_analysis = not raw_question or raw_question.endswith('Analysis')
+    question = (
+        'Provide a comprehensive analysis of this document segment. '
+        'Extract and describe all key information, data, and visual elements.'
+    ) if is_base_analysis else raw_question
+    user_instructions = event.get('user_instructions', '')
+    language = event.get('language', 'en')
+    language_names = {'ko': 'Korean', 'en': 'English', 'ja': 'Japanese', 'zh': 'Chinese'}
+    language_name = language_names.get(language, 'English')
+    workflow_id = event.get('workflow_id', '')
+    document_id = event.get('document_id', '')
+    project_id = event.get('project_id', 'default')
+    file_type = event.get('file_type', '')
+    mode = event.get('mode', 'regenerate')
+
+    # 1. Load segment data from S3
+    segment_data = get_segment_analysis(file_uri, segment_index)
+    if not segment_data:
+        return {'statusCode': 404, 'error': f'Segment not found: {file_uri}, index {segment_index}'}
+
+    ai_analysis = segment_data.get('ai_analysis', [])
+    if mode in ('regenerate', 'delete') and (qa_index < 0 or qa_index >= len(ai_analysis)):
+        return {'statusCode': 400, 'error': f'Invalid qa_index: {qa_index}, total: {len(ai_analysis)}'}
+
+    # Handle delete mode early - no Bedrock call needed
+    if mode == 'delete':
+        deleted_item = ai_analysis.pop(qa_index)
+        segment_data['ai_analysis'] = ai_analysis
+        save_segment_analysis(file_uri, segment_index, segment_data)
+
+        # Delete the specific QA record from LanceDB
+        delete_result = invoke_lancedb('delete_record', {
+            'project_id': project_id,
+            'workflow_id': workflow_id,
+            'segment_index': segment_index,
+            'qa_index': qa_index
+        })
+        print(f'LanceDB delete result: {delete_result}')
+
+        # Delete Analysis node and connected MENTIONED_IN edges from Neptune
+        analysis_id = f'{workflow_id}_{segment_index:04d}_{qa_index:02d}'
+        graph_result = invoke_graph_service('delete_analysis', {
+            'project_id': project_id,
+            'analysis_id': analysis_id,
+        })
+        print(f'Graph delete result: {graph_result}')
+
+        return {
+            'statusCode': 200,
+            'deleted': True,
+            'deleted_query': deleted_item.get('analysis_query', ''),
+            'qa_index': qa_index
+        }
+
+    # 2. Mark qa_regen in progress
+    _set_qa_regen_status(workflow_id, segment_index, 'in_progress')
+
+    try:
+        # 3. Build context and previous Q&A
+        context = _build_context(segment_data)
+        previous_qa = _build_previous_qa(ai_analysis, qa_index)
+
+        # 4. Download and resize image
+        image_uri = segment_data.get('image_uri', '')
+        image_data = _download_image(image_uri)
+
+        # 5. Build prompt
+        prompt_template = _load_prompt()
+        if prompt_template:
+            prompt = prompt_template.format(
+                previous_context=context,
+                previous_qa=previous_qa,
+                question=question,
+                user_instructions=user_instructions or 'No additional instructions.',
+                language=language_name
+            )
+        else:
+            prompt = f'Answer this question about the document: {question}\n\nRespond in {language_name}.'
+
+        # 6. Call Bedrock Nova vision (Converse) API
+        messages_content = []
+        if image_data:
+            resized = _resize_image_if_needed(image_data)
+            media_type = _detect_media_type(resized)
+            image_format = media_type.split('/')[-1].replace('jpg', 'jpeg')
+            messages_content.append({'image': {'format': image_format, 'source': {'bytes': resized}}})
+        messages_content.append({'text': prompt})
+
+        client = get_bedrock_client()
+        response = client.converse(
+            modelId=BEDROCK_MODEL_ID,
+            messages=[{'role': 'user', 'content': messages_content}],
+            inferenceConfig={'maxTokens': 8192, 'temperature': 0.1},
+        )
+        answer = ''.join(
+            block.get('text', '')
+            for block in response['output']['message']['content']
+        )
+    except Exception:
+        _set_qa_regen_status(workflow_id, segment_index, 'completed')
+        raise
+
+    # 7. Clear qa_regen status
+    _set_qa_regen_status(workflow_id, segment_index, 'completed')
+
+    # 8. Update ai_analysis in S3
+    # For base analysis, preserve the original placeholder (e.g. "Page N Analysis")
+    # so downstream detection logic continues to recognize it as base analysis.
+    stored_query = raw_question if is_base_analysis else question
+    new_item = {
+        'analysis_query': stored_query,
+        'content': answer[:3000]
+    }
+    if mode == 'add':
+        ai_analysis.append(new_item)
+        qa_index = len(ai_analysis) - 1
+    else:
+        ai_analysis[qa_index] = new_item
+    segment_data['ai_analysis'] = ai_analysis
+    save_segment_analysis(file_uri, segment_index, segment_data)
+
+    # 9. Update LanceDB: delete old QA record, add new one
+    delete_result = invoke_lancedb('delete_record', {
+        'project_id': project_id,
+        'workflow_id': workflow_id,
+        'segment_index': segment_index,
+        'qa_index': qa_index
+    })
+    print(f'LanceDB delete result: {delete_result}')
+
+    qa_content = _build_qa_content(stored_query, answer[:3000])
+    add_result = invoke_lancedb('add_record', {
+        'workflow_id': workflow_id,
+        'document_id': document_id,
+        'project_id': project_id,
+        'segment_index': segment_index,
+        'qa_index': qa_index,
+        'question': stored_query,
+        'content_combined': qa_content,
+        'language': language,
+        'file_uri': file_uri,
+        'file_type': file_type,
+        'image_uri': image_uri,
+        'created_at': datetime.now(timezone.utc).isoformat()
+    })
+    print(f'LanceDB add result: {add_result}')
+
+    # 10. Update Neptune graph
+    if mode == 'regenerate':
+        # Delete old Analysis node (and its MENTIONED_IN edges)
+        analysis_id = f'{workflow_id}_{segment_index:04d}_{qa_index:02d}'
+        invoke_graph_service('delete_analysis', {
+            'project_id': project_id,
+            'analysis_id': analysis_id,
+        })
+
+    # Create Analysis node + BELONGS_TO edge to Segment
+    invoke_graph_service('add_analyses', {
+        'project_id': project_id,
+        'workflow_id': workflow_id,
+        'document_id': document_id,
+        'analyses': [{
+            'segment_index': segment_index,
+            'qa_index': qa_index,
+            'question': stored_query,
+        }],
+    })
+    print(f'Graph analysis node created: seg={segment_index}, qa={qa_index}')
+
+    # Re-extract entities for this segment (async)
+    invoke_entity_extractor({
+        'workflow_id': workflow_id,
+        'file_uri': file_uri,
+        'segment_index': segment_index,
+        'language': language,
+    })
+
+    return {
+        'statusCode': 200,
+        'analysis_query': stored_query,
+        'content': answer[:3000],
+        'qa_index': qa_index
+    }

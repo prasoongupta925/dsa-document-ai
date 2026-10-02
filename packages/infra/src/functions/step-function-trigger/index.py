@@ -1,0 +1,139 @@
+"""Step Function Trigger Lambda
+
+Triggered by Workflow Queue (after type-detection distributes messages).
+The workflow record is already created by type-detection Lambda.
+This Lambda starts the Step Functions execution and updates the execution_arn.
+"""
+import json
+import os
+from datetime import datetime
+
+import boto3
+
+from shared.ddb_client import get_workflow, update_workflow_status, get_entity_prefix, WorkflowStatus
+
+sfn_client = None
+STEP_FUNCTION_ARN = os.environ.get('STEP_FUNCTION_ARN')
+
+
+def get_sfn_client():
+    global sfn_client
+    if sfn_client is None:
+        sfn_client = boto3.client(
+            'stepfunctions',
+            region_name=os.environ.get('AWS_REGION', 'us-east-1')
+        )
+    return sfn_client
+
+
+def handler(event, context):
+    print(f'Event: {json.dumps(event)}')
+
+    results = []
+
+    for record in event.get('Records', []):
+        try:
+            body = json.loads(record.get('body', '{}'))
+
+            # Message from type-detection via Workflow Queue (enriched with all preprocessing fields)
+            workflow_id = body.get('workflow_id')
+            document_id = body.get('document_id')
+            project_id = body.get('project_id')
+            file_uri = body.get('file_uri')
+            file_name = body.get('file_name')
+            file_type = body.get('file_type')
+            language = body.get('language', 'en')
+            use_bda = body.get('use_bda', False)
+            use_ocr = body.get('use_ocr', True)
+            use_transcribe = body.get('use_transcribe', False)
+            processing_type = body.get('processing_type', 'document')
+            document_prompt = body.get('document_prompt', '')
+            ocr_model = body.get('ocr_model', 'pp-ocrv5')
+            ocr_options = body.get('ocr_options', {})
+            transcribe_options = body.get('transcribe_options')
+            source_url = body.get('source_url', '')
+            crawl_instruction = body.get('crawl_instruction', '')
+
+            if not workflow_id or not document_id:
+                print(f'Skipping: missing workflow_id or document_id')
+                continue
+
+            # Determine entity type based on file type (WEB# for webreq, DOC# for others)
+            entity_type = get_entity_prefix(file_type)
+
+            # Verify workflow exists (created by type-detection)
+            workflow = get_workflow(document_id, workflow_id, entity_type)
+            if not workflow:
+                print(f'Workflow not found: {workflow_id}, document: {document_id}, entity_type: {entity_type}')
+                continue
+
+            client = get_sfn_client()
+            execution_name = f'{workflow_id[:16]}-{datetime.utcnow().strftime("%Y%m%d%H%M%S")}'
+
+            # Input for Step Functions (includes all preprocessing fields)
+            sfn_input = {
+                'workflow_id': workflow_id,
+                'document_id': document_id,
+                'project_id': project_id,
+                'file_uri': file_uri,
+                'file_name': file_name,
+                'file_type': file_type,
+                'processing_type': processing_type,
+                'language': language,
+                'use_bda': use_bda,
+                'use_ocr': use_ocr,
+                'use_transcribe': use_transcribe,
+                'ocr_model': ocr_model,
+                'ocr_options': ocr_options,
+                'document_prompt': document_prompt,
+                'source_url': source_url,
+                'crawl_instruction': crawl_instruction,
+                'is_reanalysis': False,
+                'triggered_at': datetime.utcnow().isoformat()
+            }
+            if transcribe_options:
+                sfn_input['transcribe_options'] = transcribe_options
+
+            response = client.start_execution(
+                stateMachineArn=STEP_FUNCTION_ARN,
+                name=execution_name,
+                input=json.dumps(sfn_input)
+            )
+
+            execution_arn = response['executionArn']
+
+            # Update workflow with execution_arn and set status to in_progress
+            update_workflow_status(
+                document_id=document_id,
+                workflow_id=workflow_id,
+                status=WorkflowStatus.IN_PROGRESS,
+                entity_type=entity_type,
+                execution_arn=execution_arn
+            )
+
+            print(f'Started Step Functions for workflow {workflow_id}, execution: {execution_arn}')
+
+            results.append({
+                'workflow_id': workflow_id,
+                'document_id': document_id,
+                'project_id': project_id,
+                'execution_arn': execution_arn,
+                'status': 'started'
+            })
+
+        except Exception as e:
+            print(f'Error processing record: {e}')
+            import traceback
+            traceback.print_exc()
+            results.append({
+                'error': str(e),
+                'status': 'failed'
+            })
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'processed': len(results),
+            'results': results
+        })
+    }

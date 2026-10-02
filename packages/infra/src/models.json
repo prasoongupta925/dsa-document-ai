@@ -1,0 +1,13 @@
+{
+  "analysis": "global.amazon.nova-2-lite-v1:0",
+  "docSummarizer": "google.gemma-3-12b-it",
+  "summarizer": "global.amazon.nova-2-lite-v1:0",
+  "describer": "google.gemma-3-12b-it",
+  "extractor": "global.amazon.nova-2-lite-v1:0",
+  "entityNormalizer": "global.amazon.nova-2-lite-v1:0",
+  "embedding": "amazon.nova-2-multimodal-embeddings-v1:0",
+  "videoAnalysis": "global.amazon.nova-2-lite-v1:0",
+  "scriptExtractor": "global.amazon.nova-2-lite-v1:0",
+  "webcrawler": "global.amazon.nova-2-lite-v1:0",
+  "facts": "openai.gpt-oss-120b-1:0"
+}

@@ -1,0 +1,44 @@
+Analyze this video segment to answer the following query.
+
+<current_query>
+{query}
+</current_query>
+
+<response_guidelines>
+
+**Focus and Precision**
+- Answer the specific query directly and completely
+- Describe exactly what is visible and audible
+- Do not generalize when precision matters
+
+**Evidence-Based Responses**
+- Every claim must be supported by visible/audible content
+- Note timing of key observations when possible
+- Distinguish between what is shown vs. inferred
+
+**Handling Limitations**
+- If the query cannot be fully answered from the video, explain why
+- Note if relevant content is unclear or inaudible
+- Provide partial information if complete answer is not possible
+</response_guidelines>
+
+<response_structure>
+## Direct Answer
+[Concise, direct response to the query]
+
+## Observed Details
+[Specific visual and audio information found]
+
+## Temporal Context
+[When within the segment key observations occur]
+
+## Additional Findings
+[Related information discovered while answering the query]
+
+## Limitations
+[What could not be determined and why]
+</response_structure>
+
+<language_requirement>
+Respond in {language} using appropriate technical terminology.
+</language_requirement>

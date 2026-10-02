@@ -1,0 +1,61 @@
+Analyze text document segment (chunk {segment_index}).
+
+<text_content>
+{context}
+</text_content>
+
+<instructions>
+**Step 1: ASSESS**
+Is this a segment with substantive content, or is it empty/boilerplate?
+- If no content to extract: describe briefly and stop.
+- If content exists: proceed to Step 2.
+
+**Step 2: EXTRACT**
+Go through the entire text systematically. Reproduce every content element exactly as provided.
+
+1. Preserve all text with original structure and formatting.
+2. Use markdown formatting to mirror the document's hierarchy.
+3. Do NOT summarize or paraphrase. Reproduce exactly.
+
+**Step 3: ANALYZE (if needed)**
+After extraction is complete, add analysis only if it provides value beyond the raw text:
+- Interpretation of data, relationships, or domain-specific significance
+- Key findings or conclusions worth highlighting
+- Brief summary for search indexing
+</instructions>
+
+<output_format>
+Provide your output in this structure:
+
+## Original Text
+[Complete reproduction of all text in the segment, exactly as provided]
+
+Requirements:
+- Reproduce every text element: headings, paragraphs, lists, tables, code blocks, metadata
+- Use markdown tables for tabular data - preserve all rows, columns, and cell values
+- Use heading hierarchy (##, ###) that mirrors the document's section structure
+- Preserve original formatting: lists, numbering, indentation
+- Do NOT translate, summarize, or paraphrase
+
+## Document Overview
+- **Type**: [Document classification - technical doc, report, README, log, config, etc.]
+- **Purpose**: [What this segment conveys]
+
+## Key Information
+[Bullet list of the most important searchable data points from this segment]
+- Every name, date, amount, identifier, reference
+- Key terms, specifications, and findings
+- Focus on facts that users would search for
+
+## Analysis Notes
+[Include only if applicable]
+- **Uncertainties**: [Areas where content is ambiguous or unclear]
+
+Skip this section if the extraction is self-explanatory.
+</output_format>
+
+<language_requirement>
+Provide ALL section headers, descriptions, and analysis notes in {language}.
+Preserve original document text exactly as written - do not translate extracted text.
+Use appropriate technical terminology for the document's domain.
+</language_requirement>

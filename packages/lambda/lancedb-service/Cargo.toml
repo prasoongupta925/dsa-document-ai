@@ -1,0 +1,24 @@
+[package]
+name = "lancedb-service"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arrow-array = "57"
+arrow-schema = "57"
+aws-config = "1"
+aws-sdk-bedrockruntime = "1"
+aws-sdk-lambda = "1"
+futures = "0.3"
+lance-index = "3"
+lambda_runtime = "0.13"
+lancedb = { version = "0.27.0", features = ["dynamodb"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = "0.4.44"
+
+[dev-dependencies]
+dotenvy = "0.15"

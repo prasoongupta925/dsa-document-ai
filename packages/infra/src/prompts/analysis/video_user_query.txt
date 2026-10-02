@@ -1,0 +1,72 @@
+Analyze video segment (chapter {segment_index}).
+
+<upstream_processor_results>
+The following was extracted by automated processors. Use as reference but verify against the video. The video is the authoritative source. Processors frequently miss content, garble text, and produce incomplete transcripts.
+
+{context}
+</upstream_processor_results>
+
+<instructions>
+**Step 1: ASSESS**
+Determine if this segment has substantive content to extract.
+- If no meaningful content (black screen, dead air, empty bumper): describe briefly and stop.
+- If content exists: proceed to Step 2.
+
+**Step 2: EXTRACT**
+1. Call `extract_video_script` to get the corrected speech transcript. Wait for the result.
+2. Use `analyze_video` with targeted queries to extract visual content systematically.
+3. Check the upstream processor results for the same content areas.
+4. If the processors got it right, use the content.
+5. If the processors got it wrong or missed something, correct it using what the tools report.
+
+Cover ALL content in the segment - visual scenes, speech, text overlays, actions, and events.
+
+**Step 3: ANALYZE (if needed)**
+After extraction is complete, add analysis only if it provides value beyond the raw extraction:
+- Interpretation of content, demonstrations, or discussions
+- Relationships between visual and audio elements
+- Domain-specific significance
+- Notable patterns or events
+</instructions>
+
+<output_format>
+Provide your output in this structure:
+
+## Video Overview
+- **Type**: [Content classification - tutorial, presentation, documentary, interview, etc.]
+- **Setting**: [Location/environment description]
+- **Participants**: [People/subjects visible]
+
+## Speech Content
+[Full corrected transcript from extract_video_script]
+- Preserve the complete transcript exactly as corrected
+- Mark inaudible sections as [inaudible]
+- Do NOT summarize - this must be the full transcript
+
+## Visual Content
+[Describe key scenes, actions, and visual elements in chronological order]
+- Scene descriptions and transitions
+- Actions and activities
+- Text overlays, titles, and graphics
+- Objects, products, and equipment shown
+
+## Key Information
+[Bullet list of the most important searchable data points]
+- Every name, date, product, organization mentioned
+- Key terms, topics, and concepts discussed
+- Specific facts and figures presented
+- Focus on facts that users would search for
+
+## Analysis Notes
+[Include only if applicable]
+- **Uncertainties**: [Areas where observation confidence is low]
+- **Inaudible/Unclear**: [Parts that could not be understood]
+
+Do NOT report STT corrections, transcription fixes, or what you corrected from the upstream processor results. Just output the correct content silently.
+</output_format>
+
+<language_requirement>
+Provide ALL section headers, descriptions, and analysis notes in {language}.
+Preserve original speech content exactly as spoken - do not translate quoted speech.
+Use appropriate terminology for the video's domain.
+</language_requirement>

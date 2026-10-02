@@ -1,0 +1,4 @@
+paddleocr>=3.0.0
+paddlepaddle==3.2.2
+boto3
+pypdfium2

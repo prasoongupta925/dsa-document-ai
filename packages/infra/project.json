@@ -1,0 +1,95 @@
+{
+  "name": "@idp-v2/infra",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/infra/src",
+  "projectType": "application",
+  "tags": [],
+  "metadata": {
+    "generator": "ts#infra"
+  },
+  "targets": {
+    "bootstrap": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "packages/infra",
+        "command": "cdk bootstrap"
+      }
+    },
+    "build": {
+      "dependsOn": ["lint", "compile", "test", "synth", "checkov"]
+    },
+    "cdk": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "packages/infra",
+        "command": "cdk"
+      }
+    },
+    "checkov": {
+      "cache": true,
+      "executor": "nx:run-commands",
+      "inputs": ["{workspaceRoot}/dist/{projectRoot}/cdk.out"],
+      "outputs": ["{workspaceRoot}/dist/{projectRoot}/checkov"],
+      "dependsOn": ["synth"],
+      "options": {
+        "command": "uvx --with pycares==4.11.0 checkov==3.2.495 --config-file packages/infra/checkov.yml --directory dist/packages/infra/cdk.out/**/*.template.json"
+      }
+    },
+    "compile": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/dist/packages/infra/tsc"],
+      "options": {
+        "command": "tsc --build tsconfig.lib.json",
+        "cwd": "{projectRoot}"
+      }
+    },
+    "deploy": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["^build", "compile"],
+      "options": {
+        "cwd": "packages/infra",
+        "command": "cdk deploy --require-approval=never"
+      }
+    },
+    "deploy-ci": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "packages/infra",
+        "command": "cdk deploy --all --require-approval=never --app ../../dist/packages/infra/cdk.out"
+      }
+    },
+    "destroy": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["^build", "compile"],
+      "options": {
+        "cwd": "packages/infra",
+        "command": "cdk destroy --require-approval=never"
+      }
+    },
+    "destroy-ci": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "packages/infra",
+        "command": "cdk destroy --require-approval=never --app ../../dist/packages/infra/cdk.out"
+      }
+    },
+    "synth": {
+      "cache": true,
+      "executor": "nx:run-commands",
+      "inputs": ["default"],
+      "outputs": ["{workspaceRoot}/dist/packages/infra/cdk.out"],
+      "dependsOn": ["^build", "compile"],
+      "options": {
+        "cwd": "packages/infra",
+        "command": "cdk synth"
+      }
+    },
+    "test": {
+      "executor": "@nx/vitest:test",
+      "outputs": ["{options.reportsDirectory}"],
+      "options": {
+        "reportsDirectory": "../../coverage/packages/infra"
+      }
+    }
+  }
+}

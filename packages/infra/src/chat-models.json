@@ -1,0 +1,42 @@
+[
+  {
+    "value": "zai.glm-5",
+    "label": "GLM-5",
+    "description": "Z.ai GLM-5, default chat model (AWS-sold, in-region)",
+    "contextWindow": "200K tokens",
+    "inputPrice": "$1.20 / 1M",
+    "outputPrice": "$3.84 / 1M",
+    "metrics": { "intelligence": 8, "speed": 6, "context": 7, "cost": 6 },
+    "supportsReasoning": false
+  },
+  {
+    "value": "global.amazon.nova-2-lite-v1:0",
+    "label": "Nova 2 Lite",
+    "description": "Amazon first-party model (global inference)",
+    "contextWindow": "1M tokens",
+    "inputPrice": "$0.35 / 1M",
+    "outputPrice": "$2.95 / 1M",
+    "metrics": { "intelligence": 6, "speed": 9, "context": 10, "cost": 9 },
+    "supportsReasoning": false
+  },
+  {
+    "value": "deepseek.v3.2",
+    "label": "DeepSeek V3.2",
+    "description": "DeepSeek V3.2 (AWS-sold, in-region)",
+    "contextWindow": "128K tokens",
+    "inputPrice": "$0.74 / 1M",
+    "outputPrice": "$2.22 / 1M",
+    "metrics": { "intelligence": 7, "speed": 7, "context": 6, "cost": 8 },
+    "supportsReasoning": false
+  },
+  {
+    "value": "moonshotai.kimi-k2.5",
+    "label": "Kimi K2.5",
+    "description": "Moonshot AI Kimi K2.5 (AWS-sold, in-region)",
+    "contextWindow": "256K tokens",
+    "inputPrice": "$0.72 / 1M",
+    "outputPrice": "$3.60 / 1M",
+    "metrics": { "intelligence": 8, "speed": 6, "context": 8, "cost": 7 },
+    "supportsReasoning": false
+  }
+]

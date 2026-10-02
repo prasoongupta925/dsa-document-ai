@@ -1,0 +1,350 @@
+import { Stack, StackProps } from 'aws-cdk-lib';
+import * as cr from 'aws-cdk-lib/custom-resources';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import { Table } from 'aws-cdk-lib/aws-dynamodb';
+import { Bucket } from 'aws-cdk-lib/aws-s3';
+import { Queue } from 'aws-cdk-lib/aws-sqs';
+import { StringParameter } from 'aws-cdk-lib/aws-ssm';
+import { Construct } from 'constructs';
+import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
+import {
+  CodeInterpreterCustom,
+  Gateway,
+  Runtime,
+} from '@aws-cdk/aws-bedrock-agentcore-alpha';
+import { IdpAgent, SSM_KEYS, getRegionConfig } from ':idp-v2/common-constructs';
+import chatModels from '../chat-models.json' with { type: 'json' };
+
+export interface AgentStackProps extends StackProps {
+  gateway: Gateway;
+}
+
+export class AgentStack extends Stack {
+  public readonly agentCoreRuntime: Runtime;
+
+  constructor(scope: Construct, id: string, props: AgentStackProps) {
+    super(scope, id, props);
+
+    const { gateway } = props;
+
+    // Get session storage bucket name from SSM
+    const sessionStorageBucketName = StringParameter.valueForStringParameter(
+      this,
+      SSM_KEYS.SESSION_STORAGE_BUCKET_NAME,
+    );
+
+    const sessionStorageBucket = Bucket.fromBucketName(
+      this,
+      'SessionStorageBucket',
+      sessionStorageBucketName,
+    );
+
+    // Get backend table from SSM
+    const backendTableName = StringParameter.valueForStringParameter(
+      this,
+      SSM_KEYS.BACKEND_TABLE_NAME,
+    );
+
+    const backendTable = Table.fromTableName(
+      this,
+      'BackendTable',
+      backendTableName,
+    );
+
+    // Get agent storage bucket from SSM
+    const agentStorageBucketName = StringParameter.valueForStringParameter(
+      this,
+      SSM_KEYS.AGENT_STORAGE_BUCKET_NAME,
+    );
+
+    const agentStorageBucket = Bucket.fromBucketName(
+      this,
+      'AgentStorageBucket',
+      agentStorageBucketName,
+    );
+
+    // Get websocket message queue from SSM
+    const websocketMessageQueueArn = StringParameter.valueForStringParameter(
+      this,
+      SSM_KEYS.WEBSOCKET_MESSAGE_QUEUE_ARN,
+    );
+    const websocketMessageQueue = Queue.fromQueueArn(
+      this,
+      'WebsocketMessageQueue',
+      websocketMessageQueueArn,
+    );
+
+    // Get document storage bucket from SSM
+    const documentBucketName = StringParameter.valueForStringParameter(
+      this,
+      SSM_KEYS.DOCUMENT_STORAGE_BUCKET_NAME,
+    );
+
+    const documentBucket = Bucket.fromBucketName(
+      this,
+      'DocumentBucket',
+      documentBucketName,
+    );
+
+    // Selectable chat models (AWS-sold only). The backend (GET /chat/models)
+    // and the agent (model_id allowlist) read this parameter.
+    new StringParameter(this, 'ChatModelCatalogParam', {
+      parameterName: SSM_KEYS.CHAT_MODEL_CATALOG,
+      stringValue: JSON.stringify(chatModels),
+      description:
+        'Selectable chat models (AWS-sold only). First entry is the default.',
+    });
+
+    // Initialize prompt files in S3 on first deployment
+    const promptSeeds: { id: string; localPath: string; s3Key: string }[] = [
+      {
+        id: 'InitChatSystemPrompt',
+        localPath: 'src/prompts/chat/system_prompt.txt',
+        s3Key: '__prompts/chat/system_prompt.txt',
+      },
+      {
+        id: 'InitVoiceSystemPrompt',
+        localPath: 'src/prompts/voice/system_prompt.txt',
+        s3Key: '__prompts/voice/system_prompt.txt',
+      },
+      {
+        id: 'InitWebCrawlerSystemPrompt',
+        localPath: 'src/prompts/webcrawler/system_prompt.txt',
+        s3Key: '__prompts/webcrawler/system_prompt.txt',
+      },
+    ];
+
+    for (const seed of promptSeeds) {
+      const content = fs.readFileSync(
+        path.resolve(process.cwd(), seed.localPath),
+        'utf-8',
+      );
+      new cr.AwsCustomResource(this, seed.id, {
+        onCreate: {
+          service: 'S3',
+          action: 'putObject',
+          parameters: {
+            Bucket: agentStorageBucketName,
+            Key: seed.s3Key,
+            Body: content,
+            ContentType: 'text/plain',
+          },
+          physicalResourceId: cr.PhysicalResourceId.of(
+            `${seed.id.toLowerCase()}-init`,
+          ),
+        },
+        policy: cr.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            actions: ['s3:PutObject'],
+            resources: [`${agentStorageBucket.bucketArn}/__prompts/*`],
+          }),
+        ]),
+      });
+    }
+
+    // Upload analysis prompts to S3 (updates on content change)
+    const analysisPromptFiles = [
+      'system_prompt',
+      'user_query',
+      'image_analysis_prompt',
+      'video_system_prompt',
+      'video_user_query',
+      'video_analysis_prompt',
+      'text_system_prompt',
+      'text_user_query',
+      'script_extractor_prompt',
+    ];
+
+    for (const promptFile of analysisPromptFiles) {
+      const promptPath = path.resolve(
+        process.cwd(),
+        `src/prompts/analysis/${promptFile}.txt`,
+      );
+      const promptContent = fs.readFileSync(promptPath, 'utf-8');
+      const contentHash = crypto
+        .createHash('md5')
+        .update(promptContent)
+        .digest('hex')
+        .slice(0, 8);
+      const resourceId = `InitAnalysis${promptFile
+        .split('_')
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join('')}`;
+
+      const s3PutParams = {
+        service: 'S3',
+        action: 'putObject',
+        parameters: {
+          Bucket: agentStorageBucketName,
+          Key: `__prompts/analysis/${promptFile}.txt`,
+          Body: promptContent,
+          ContentType: 'text/plain',
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(
+          `analysis-${promptFile}-${contentHash}`,
+        ),
+      };
+
+      new cr.AwsCustomResource(this, resourceId, {
+        onCreate: s3PutParams,
+        onUpdate: s3PutParams,
+        policy: cr.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            actions: ['s3:PutObject'],
+            resources: [`${agentStorageBucket.bucketArn}/__prompts/*`],
+          }),
+        ]),
+      });
+    }
+
+    // Built-in agents: read-only agents every user sees in every project.
+    // Each src/prompts/builtin_agents/<agent_id>.json is uploaded to
+    // __prompts/builtin_agents/<agent_id>.json and re-uploaded when it
+    // changes, like the analysis prompts. The backend lists them; the IDP
+    // agent loads one when a chat uses its id.
+    const builtinAgentsDir = path.resolve(
+      process.cwd(),
+      'src/prompts/builtin_agents',
+    );
+    const builtinAgentFiles = fs
+      .readdirSync(builtinAgentsDir)
+      .filter((file) => file.endsWith('.json'))
+      .sort();
+
+    for (const file of builtinAgentFiles) {
+      const agentId = file.slice(0, -'.json'.length);
+      const body = fs.readFileSync(path.join(builtinAgentsDir, file), 'utf-8');
+      const agent = JSON.parse(body) as Record<string, unknown> | null;
+      if (
+        !/^builtin-[a-z0-9-]{1,64}$/.test(agentId) ||
+        agent?.agent_id !== agentId ||
+        typeof agent.name !== 'string' ||
+        typeof agent.content !== 'string'
+      ) {
+        throw new Error(
+          `Built-in agent ${file}: expected <agent_id>.json with agent_id ` +
+            'builtin-[a-z0-9-]{1,64} equal to the file name, and string name and content',
+        );
+      }
+      const contentHash = crypto
+        .createHash('md5')
+        .update(body)
+        .digest('hex')
+        .slice(0, 8);
+
+      const s3PutParams = {
+        service: 'S3',
+        action: 'putObject',
+        parameters: {
+          Bucket: agentStorageBucketName,
+          Key: `__prompts/builtin_agents/${file}`,
+          Body: body,
+          ContentType: 'application/json',
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(
+          `${agentId}-${contentHash}`,
+        ),
+      };
+
+      new cr.AwsCustomResource(this, `InitBuiltinAgent-${agentId}`, {
+        onCreate: s3PutParams,
+        onUpdate: s3PutParams,
+        policy: cr.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            actions: ['s3:PutObject'],
+            resources: [
+              `${agentStorageBucket.bucketArn}/__prompts/builtin_agents/*`,
+            ],
+          }),
+        ]),
+      });
+    }
+
+    // Create Code Interpreter for IDP Agent
+    const idpCodeInterpreter = new CodeInterpreterCustom(
+      this,
+      'IdpCodeInterpreter',
+      {
+        codeInterpreterCustomName: 'idp_agent_interpreter',
+        description: 'Code interpreter for IDP agent',
+      },
+    );
+    agentStorageBucket.grantReadWrite(idpCodeInterpreter.executionRole);
+    documentBucket.grantDelete(idpCodeInterpreter.executionRole);
+
+    const idpAgent = new IdpAgent(this, 'IdpAgent', {
+      agentPath: path.resolve(process.cwd(), '../../packages/agents/idp-agent'),
+      agentName: 'idp_agent',
+      sessionStorageBucket,
+      backendTable,
+      gateway,
+      bedrockModelId: 'zai.glm-5',
+      agentStorageBucket,
+      websocketMessageQueue,
+      codeInterpreterIdentifier: idpCodeInterpreter.codeInterpreterId,
+    });
+
+    idpCodeInterpreter.grantUse(idpAgent.runtime.role);
+
+    // Create Code Interpreter for Research Agent
+    const codeInterpreter = new CodeInterpreterCustom(this, 'CodeInterpreter', {
+      codeInterpreterCustomName: 'research_agent_interpreter',
+      description: 'Code interpreter for research agent',
+    });
+    agentStorageBucket.grantReadWrite(codeInterpreter.executionRole);
+
+    this.agentCoreRuntime = idpAgent.runtime;
+
+    // Store Agent Runtime ARN in SSM for cross-stack reference
+    new StringParameter(this, 'AgentRuntimeArnParam', {
+      parameterName: SSM_KEYS.AGENT_RUNTIME_ARN,
+      stringValue: this.agentCoreRuntime.agentRuntimeArn,
+      description: 'ARN of the IDP Agent Runtime',
+    });
+
+    const bidiAgent = new IdpAgent(this, 'BidiAgent', {
+      agentPath: path.resolve(
+        process.cwd(),
+        '../../packages/agents/bidi-agent',
+      ),
+      agentName: 'bidi_agent',
+      sessionStorageBucket,
+      backendTable,
+      gateway,
+      agentStorageBucket,
+      // Nova Sonic is not offered in every region (e.g. ap-south-1); region is
+      // config (context voiceModelRegion)
+      extraEnvironment: {
+        VOICE_MODEL_REGION: getRegionConfig(this).voiceModelRegion,
+      },
+    });
+
+    new StringParameter(this, 'BidiAgentRuntimeArnParam', {
+      parameterName: SSM_KEYS.BIDI_AGENT_RUNTIME_ARN,
+      stringValue: bidiAgent.runtime.agentRuntimeArn,
+      description: 'ARN of the Bidi Agent Runtime',
+    });
+
+    // WebCrawler Agent - crawls web pages using AgentCore Browser
+    const webcrawlerAgent = new IdpAgent(this, 'WebCrawlerAgent', {
+      agentPath: path.resolve(
+        process.cwd(),
+        '../../packages/agents/webcrawler-agent',
+      ),
+      agentName: 'webcrawler_agent',
+      sessionStorageBucket,
+      backendTable,
+      gateway,
+      documentBucket,
+      agentStorageBucket,
+    });
+
+    new StringParameter(this, 'WebCrawlerAgentRuntimeArnParam', {
+      parameterName: SSM_KEYS.WEBCRAWLER_AGENT_RUNTIME_ARN,
+      stringValue: webcrawlerAgent.runtime.agentRuntimeArn,
+      description: 'ARN of the WebCrawler Agent Runtime',
+    });
+  }
+}

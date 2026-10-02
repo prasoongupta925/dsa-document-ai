@@ -1,0 +1,789 @@
+"""
+Segment Builder Lambda
+
+Merges all processing sources and creates segment JSON files for analysis.
+
+Reads from:
+- preprocessor/metadata.json - segment images from Preprocessor
+- bda-output/ - BDA analysis results (if use_bda=true)
+- paddleocr/result.json - OCR results
+- format-parser/result.json - PDF text extraction results
+
+Creates:
+- analysis/segment_XXXX.json - merged segment data for SegmentAnalyzer
+"""
+import json
+import re
+from typing import Optional
+
+from shared.ddb_client import (
+    record_step_start,
+    record_step_complete,
+    record_step_error,
+    update_workflow_status,
+    update_workflow_total_segments,
+    get_project_language,
+    get_entity_prefix,
+        WorkflowStatus,
+    StepName,
+)
+from shared.s3_analysis import (
+    save_segment_analysis,
+    get_segment_analysis,
+    get_s3_client,
+    parse_s3_uri,
+    SegmentStatus,
+)
+
+
+def download_json_from_s3(uri: str) -> Optional[dict]:
+    """Download and parse JSON from S3. Returns None if not found."""
+    client = get_s3_client()
+    bucket, key = parse_s3_uri(uri)
+
+    try:
+        response = client.get_object(Bucket=bucket, Key=key)
+        return json.loads(response['Body'].read().decode('utf-8'))
+    except client.exceptions.NoSuchKey:
+        print(f'File not found: {uri}')
+        return None
+    except Exception as e:
+        print(f'Error downloading {uri}: {e}')
+        return None
+
+
+def get_document_base_path(file_uri: str) -> tuple[str, str]:
+    """Extract bucket and document base path from file URI."""
+    bucket, key = parse_s3_uri(file_uri)
+    key_parts = key.split('/')
+
+    if 'documents' in key_parts:
+        doc_idx = key_parts.index('documents')
+        base_path = '/'.join(key_parts[:doc_idx + 2])
+    else:
+        base_path = '/'.join(key_parts[:-1])
+
+    return bucket, base_path
+
+
+def transform_markdown_image_urls(markdown: str, base_uri: str) -> str:
+    """Transform relative image paths in markdown to full S3 URIs."""
+    if not markdown:
+        return markdown
+
+    def replace_image_url(match):
+        alt_text = match.group(1)
+        image_url = match.group(2)
+
+        if image_url.startswith('s3://') or image_url.startswith('http'):
+            return match.group(0)
+
+        if image_url.startswith('./'):
+            filename = image_url[2:]
+            # Check if already has assets/ prefix
+            if filename.startswith('assets/'):
+                full_uri = f'{base_uri}/{filename}'
+            else:
+                full_uri = f'{base_uri}/assets/{filename}'
+        elif image_url.startswith('assets/'):
+            # Already has assets/ prefix
+            full_uri = f'{base_uri}/{image_url}'
+        else:
+            full_uri = f'{base_uri}/assets/{image_url}'
+
+        clean_alt = ' '.join(alt_text.split())
+        clean_alt = clean_alt.replace('[', '\\[').replace(']', '\\]')
+        return f'![{clean_alt}]({full_uri})'
+
+    pattern = r'!\[(.*?)\]\(([^)]+)\)'
+    return re.sub(pattern, replace_image_url, markdown, flags=re.DOTALL)
+
+
+def parse_bda_output(bda_metadata_uri: str, bda_output_uri: str, is_video: bool) -> dict:
+    """Parse BDA output and return indexed results by segment."""
+    results = {}
+
+    metadata = download_json_from_s3(bda_metadata_uri)
+    if not metadata:
+        return results
+
+    output_metadata = metadata.get('output_metadata', [])
+    for output in output_metadata:
+        segment_metadata = output.get('segment_metadata', [])
+        for segment in segment_metadata:
+            standard_output_path = segment.get('standard_output_path')
+            if not standard_output_path:
+                continue
+
+            if standard_output_path.startswith('s3://'):
+                standard_output_uri = standard_output_path
+            else:
+                standard_output_uri = f'{bda_output_uri.rstrip("/")}/{standard_output_path}'
+
+            standard_output = download_json_from_s3(standard_output_uri)
+            if not standard_output:
+                continue
+
+            standard_output_base = standard_output_uri.rsplit('/', 1)[0]
+
+            if is_video:
+                # Video: extract chapters or single video segment
+                video_data = standard_output.get('video', {})
+                chapters = standard_output.get('chapters', []) or video_data.get('chapters', [])
+
+                if not chapters:
+                    video_summary = video_data.get('summary', '')
+                    results[0] = {
+                        'bda_indexer': video_summary,
+                        'segment_type': 'VIDEO'
+                    }
+                else:
+                    for idx, chapter in enumerate(chapters):
+                        results[idx] = {
+                            'bda_indexer': chapter.get('summary', ''),
+                            'segment_type': 'CHAPTER',
+                            'start_timecode_smpte': chapter.get('start_timecode_smpte', ''),
+                            'end_timecode_smpte': chapter.get('end_timecode_smpte', '')
+                        }
+            else:
+                # Document: extract pages
+                pages = standard_output.get('pages', [])
+                for page in pages:
+                    page_index = page.get('page_index', 0)
+                    representation = page.get('representation', {})
+                    markdown = representation.get('markdown', '')
+
+                    # Transform image URLs
+                    transformed_markdown = transform_markdown_image_urls(
+                        markdown, standard_output_base
+                    )
+
+                    # Get image URI (rectified_image is in /assets/ folder)
+                    asset_metadata = page.get('asset_metadata', {})
+                    image_uri = asset_metadata.get('rectified_image', '')
+                    print(f'Page {page_index} rectified_image raw value: {image_uri}')
+                    if image_uri and not image_uri.startswith('s3://'):
+                        if image_uri.startswith('./'):
+                            image_uri = f'{standard_output_base}/assets/{image_uri[2:]}'
+                        elif image_uri.startswith('assets/'):
+                            # Already has assets/ prefix
+                            image_uri = f'{standard_output_base}/{image_uri}'
+                        else:
+                            image_uri = f'{standard_output_base}/assets/{image_uri}'
+                    print(f'Page {page_index} rectified_image final: {image_uri}')
+
+                    results[page_index] = {
+                        'bda_indexer': transformed_markdown,
+                        'bda_image_uri': image_uri,
+                        'segment_type': 'PAGE'
+                    }
+
+    return results
+
+
+def parse_ocr_result(file_uri: str) -> dict:
+    """Read OCR result and return indexed by page."""
+    bucket, base_path = get_document_base_path(file_uri)
+    ocr_uri = f's3://{bucket}/{base_path}/paddleocr/result.json'
+
+    result = download_json_from_s3(ocr_uri)
+    if not result:
+        return {}
+
+    ocr_results = {}
+    pages = result.get('pages', [])
+
+    if not pages:
+        # Single content (for single images)
+        content = result.get('content', '')
+        if content:
+            ocr_results[0] = {
+                'paddleocr': content,
+                'paddleocr_blocks': {}
+            }
+        return ocr_results
+
+    for i, page in enumerate(pages):
+        page_content = page.get('content', '')
+        page_blocks = page.get('blocks', [])
+        page_width = page.get('width')
+        page_height = page.get('height')
+
+        ocr_results[i] = {
+            'paddleocr': page_content,
+            'paddleocr_blocks': {
+                'blocks': page_blocks,
+                'width': page_width,
+                'height': page_height
+            }
+        }
+
+    return ocr_results
+
+
+def parse_format_parser_result(file_uri: str, is_text: bool = False) -> dict:
+    """Read format parser result and return indexed by page/chunk.
+
+    For PDF: returns {'format_parser': text} per page
+    For text files: returns {'text_content': text} per chunk
+    """
+    bucket, base_path = get_document_base_path(file_uri)
+    parser_uri = f's3://{bucket}/{base_path}/format-parser/result.json'
+
+    result = download_json_from_s3(parser_uri)
+    if not result:
+        return {}
+
+    parser_results = {}
+
+    # Handle text files (chunks)
+    chunks = result.get('chunks', [])
+    if chunks:
+        for chunk in chunks:
+            chunk_index = chunk.get('chunk_index', 0)
+            text = chunk.get('text', '')
+            parser_results[chunk_index] = {
+                'text_content': text,
+                'format_parser': text  # Also set format_parser for consistency
+            }
+        return parser_results
+
+    # Handle PDF/PPTX (pages)
+    pages = result.get('pages', [])
+    for page in pages:
+        page_index = page.get('page_index', 0)
+        text = page.get('text', '')
+        page_result = {
+            'format_parser': text,
+        }
+        # Include image_uri if present (PPTX slides)
+        if page.get('image_uri'):
+            page_result['image_uri'] = page['image_uri']
+        parser_results[page_index] = page_result
+
+    return parser_results
+
+
+def find_transcribe_result(file_uri: str) -> Optional[str]:
+    """Find transcribe result JSON file from S3.
+
+    Transcribe output is stored at: s3://bucket/.../transcribe/{workflow_id}-{timestamp}.json
+    Returns the S3 URI of the transcribe result file, or None if not found.
+    """
+    client = get_s3_client()
+    bucket, base_path = get_document_base_path(file_uri)
+    prefix = f'{base_path}/transcribe/'
+
+    try:
+        paginator = client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get('Contents', []):
+                key = obj['Key']
+                if key.endswith('.json'):
+                    transcribe_uri = f's3://{bucket}/{key}'
+                    print(f'Found transcribe result: {transcribe_uri}')
+                    return transcribe_uri
+    except Exception as e:
+        print(f'Error finding transcribe result: {e}')
+
+    return None
+
+
+def parse_transcribe_result(file_uri: str) -> dict:
+    """Read transcribe result and return transcript + audio_segments.
+
+    Returns dict with:
+    - transcribe: full transcript text
+    - transcribe_segments: audio_segments array with timing info
+    """
+    transcribe_uri = find_transcribe_result(file_uri)
+    if not transcribe_uri:
+        return {}
+
+    result = download_json_from_s3(transcribe_uri)
+    if not result:
+        return {}
+
+    transcribe_data = {}
+
+    # Extract full transcript from results.transcripts[0].transcript
+    results = result.get('results', {})
+    transcripts = results.get('transcripts', [])
+    if transcripts:
+        transcribe_data['transcribe'] = transcripts[0].get('transcript', '')
+
+    # Extract audio_segments array (without items field)
+    audio_segments = results.get('audio_segments', [])
+    if audio_segments:
+        # Filter out 'items' field from each segment
+        filtered_segments = []
+        for seg in audio_segments:
+            filtered_seg = {
+                'id': seg.get('id'),
+                'transcript': seg.get('transcript', ''),
+                'start_time': seg.get('start_time', ''),
+                'end_time': seg.get('end_time', '')
+            }
+            filtered_segments.append(filtered_seg)
+        transcribe_data['transcribe_segments'] = filtered_segments
+
+    return transcribe_data
+
+
+def parse_preprocessor_metadata(file_uri: str) -> list:
+    """Read preprocessor metadata."""
+    bucket, base_path = get_document_base_path(file_uri)
+    metadata_uri = f's3://{bucket}/{base_path}/preprocessed/metadata.json'
+
+    metadata = download_json_from_s3(metadata_uri)
+    if not metadata:
+        return []
+
+    return metadata.get('segments', [])
+
+
+def download_text_from_s3(uri: str) -> Optional[str]:
+    """Download text file from S3. Returns None if not found."""
+    client = get_s3_client()
+    bucket, key = parse_s3_uri(uri)
+
+    try:
+        response = client.get_object(Bucket=bucket, Key=key)
+        return response['Body'].read().decode('utf-8')
+    except client.exceptions.NoSuchKey:
+        print(f'File not found: {uri}')
+        return None
+    except Exception as e:
+        print(f'Error downloading {uri}: {e}')
+        return None
+
+
+def parse_webcrawler_result(file_uri: str) -> list[dict]:
+    """Read webcrawler result pages from S3.
+
+    New multi-page format:
+      webcrawler/pages/page_0000.json, page_0001.json, ...
+      webcrawler/metadata.json  (start_url, instruction, total_pages)
+
+    Legacy single-page format (fallback):
+      webcrawler/content.md + webcrawler/metadata.json
+
+    Returns list of dicts, each with:
+    - webcrawler_content, source_url, page_title, instruction
+    """
+    bucket, base_path = get_document_base_path(file_uri)
+    client = get_s3_client()
+
+    # Try multi-page format first
+    pages_prefix = f'{base_path}/webcrawler/pages/'
+    page_files = []
+    try:
+        paginator = client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket, Prefix=pages_prefix):
+            for obj in page.get('Contents', []):
+                key = obj['Key']
+                if key.endswith('.json'):
+                    page_files.append(key)
+    except Exception as e:
+        print(f'Error listing webcrawler pages: {e}')
+
+    if page_files:
+        page_files.sort()
+        print(f'Found {len(page_files)} webcrawler pages')
+
+        # Read metadata for instruction
+        metadata_uri = f's3://{bucket}/{base_path}/webcrawler/metadata.json'
+        metadata = download_json_from_s3(metadata_uri) or {}
+        instruction = metadata.get('instruction', '')
+
+        pages = []
+        for page_key in page_files:
+            page_uri = f's3://{bucket}/{page_key}'
+            page_data = download_json_from_s3(page_uri)
+            if page_data:
+                pages.append({
+                    'webcrawler_content': page_data.get('content', ''),
+                    'source_url': page_data.get('url', ''),
+                    'page_title': page_data.get('title', ''),
+                    'instruction': instruction,
+                })
+        return pages
+
+    # Legacy single-page fallback
+    content_uri = f's3://{bucket}/{base_path}/webcrawler/content.md'
+    content = download_text_from_s3(content_uri)
+    if content is None:
+        print(f'WebCrawler content not found: {content_uri}')
+        return []
+
+    metadata_uri = f's3://{bucket}/{base_path}/webcrawler/metadata.json'
+    metadata = download_json_from_s3(metadata_uri) or {}
+
+    return [{
+        'webcrawler_content': content,
+        'source_url': metadata.get('url', ''),
+        'page_title': metadata.get('title', ''),
+        'instruction': metadata.get('instruction', ''),
+    }]
+
+
+def is_webreq_file(file_type: str) -> bool:
+    """Check if file type is a web request file."""
+    return file_type == 'application/x-webreq'
+
+
+def find_bda_output(file_uri: str) -> tuple[str, str]:
+    """Find BDA output from S3 by scanning bda-output folder.
+
+    Returns (bda_metadata_uri, bda_output_uri) or empty strings if not found.
+    """
+    client = get_s3_client()
+    bucket, base_path = get_document_base_path(file_uri)
+    prefix = f'{base_path}/bda-output/'
+
+    try:
+        # List objects to find job_metadata.json
+        paginator = client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get('Contents', []):
+                key = obj['Key']
+                if key.endswith('job_metadata.json'):
+                    bda_metadata_uri = f's3://{bucket}/{key}'
+                    # bda_output_uri is the parent directory
+                    bda_output_uri = f's3://{bucket}/{key.rsplit("/", 1)[0]}'
+                    print(f'Found BDA output: {bda_metadata_uri}')
+                    return bda_metadata_uri, bda_output_uri
+    except Exception as e:
+        print(f'Error finding BDA output: {e}')
+
+    return '', ''
+
+
+def is_video_file(file_type: str) -> bool:
+    """Check if file type is video."""
+    if not file_type:
+        return False
+    file_type_lower = file_type.lower()
+    if file_type_lower.startswith('video/'):
+        return True
+    video_extensions = ['mp4', 'mov', 'avi', 'mkv', 'webm']
+    return file_type_lower in video_extensions
+
+
+def is_audio_file(file_type: str) -> bool:
+    """Check if file type is audio."""
+    if not file_type:
+        return False
+    file_type_lower = file_type.lower()
+    if file_type_lower.startswith('audio/'):
+        return True
+    audio_extensions = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'wma']
+    return file_type_lower in audio_extensions
+
+
+def is_media_file(file_type: str) -> bool:
+    """Check if file type is video or audio (media that can be transcribed)."""
+    return is_video_file(file_type) or is_audio_file(file_type)
+
+
+def is_text_file(file_type: str) -> bool:
+    """Check if file type is a text-based document (Markdown, TXT)."""
+    if not file_type:
+        return False
+    text_types = (
+        'text/plain',
+        'text/markdown',
+    )
+    return file_type in text_types
+
+
+def is_spreadsheet_file(file_type: str) -> bool:
+    """Check if file type is a spreadsheet (xlsx, xls, csv)."""
+    if not file_type:
+        return False
+    return file_type in (
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-excel',
+        'text/csv',
+    )
+
+
+def is_office_document(file_type: str) -> bool:
+    """Check if file type is an office document (PPTX, PPT, DOCX, DOC, DXF)."""
+    if not file_type:
+        return False
+    return file_type in (
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'application/vnd.ms-powerpoint',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/msword',
+        'application/dxf',
+        'image/vnd.dxf',
+    )
+
+
+def copy_office_document_images(file_uri: str, parser_results: dict) -> None:
+    """Copy format-parser page/slide images to preprocessed/ folder."""
+    client = get_s3_client()
+    bucket, base_path = get_document_base_path(file_uri)
+
+    for page_idx, page_data in parser_results.items():
+        src_image_uri = page_data.get('image_uri', '')
+        if not src_image_uri:
+            continue
+
+        src_bucket, src_key = parse_s3_uri(src_image_uri)
+        dst_key = f'{base_path}/preprocessed/page_{page_idx:04d}.png'
+
+        client.copy_object(
+            Bucket=bucket,
+            CopySource={'Bucket': src_bucket, 'Key': src_key},
+            Key=dst_key,
+            ContentType='image/png',
+        )
+        print(f'Copied page image {page_idx} to preprocessed/')
+
+
+def handler(event, _context):
+    print(f'Event: {json.dumps(event)}')
+
+    workflow_id = event.get('workflow_id')
+    document_id = event.get('document_id')
+    file_uri = event.get('file_uri')
+    file_type = event.get('file_type', '')
+    use_bda = event.get('use_bda', False)
+    use_transcribe = event.get('use_transcribe', False)
+    bda_metadata_uri = event.get('bda_metadata_uri', '')
+    bda_output_uri = event.get('bda_output_uri', '')
+
+    record_step_start(workflow_id, StepName.SEGMENT_BUILDER)
+
+    is_video = is_video_file(file_type)
+    is_media = is_media_file(file_type)  # video or audio
+    is_webreq = is_webreq_file(file_type)
+    is_text = is_text_file(file_type)
+    is_spread = is_spreadsheet_file(file_type)
+    is_office_doc = is_office_document(file_type)
+
+    try:
+        # 1. Read preprocessor metadata (always required)
+        preprocessor_segments = parse_preprocessor_metadata(file_uri)
+        if not preprocessor_segments:
+            # Fallback: create single segment
+            print('No preprocessor metadata, creating single segment')
+            preprocessor_segments = [{
+                'segment_index': 0,
+                'segment_type': 'VIDEO' if is_video else 'PAGE',
+                'image_uri': ''
+            }]
+
+        # 2. Read BDA results (if use_bda=true)
+        bda_results = {}
+        if use_bda:
+            # Find BDA output from S3 if not provided in event
+            if not bda_metadata_uri:
+                bda_metadata_uri, bda_output_uri = find_bda_output(file_uri)
+
+            if bda_metadata_uri:
+                print('Reading BDA results...')
+                bda_results = parse_bda_output(bda_metadata_uri, bda_output_uri, is_video)
+                print(f'BDA: {len(bda_results)} segments')
+            else:
+                print('BDA output not found in S3')
+
+        # 3. Read OCR results (skip for video, text, spreadsheet, and office document files)
+        ocr_results = {}
+        if not is_video and not is_text and not is_spread and not is_office_doc:
+            print('Reading OCR results...')
+            ocr_results = parse_ocr_result(file_uri)
+            print(f'OCR: {len(ocr_results)} pages')
+
+        # 4. Read format parser results (skip for video)
+        # Text files and spreadsheets also use format-parser for text extraction
+        parser_results = {}
+        if not is_video:
+            print('Reading format parser results...')
+            parser_results = parse_format_parser_result(file_uri, is_text=is_text or is_spread)
+            if is_text or is_spread:
+                print(f'Parser: {len(parser_results)} chunks')
+            else:
+                print(f'Parser: {len(parser_results)} pages')
+
+        # 5. Read transcribe results (for video/audio when transcribe completed)
+        # ParallelPreprocessing guarantees transcribe is done before this step runs,
+        # so we only need to check use_transcribe flag.
+        transcribe_data = {}
+        if is_media and use_transcribe:
+            print('Reading transcribe results...')
+            transcribe_data = parse_transcribe_result(file_uri)
+            if transcribe_data:
+                print(f'Transcribe: found transcript with {len(transcribe_data.get("transcribe_segments", []))} segments')
+            else:
+                print('Transcribe: no result found')
+
+        # 6. Read webcrawler results (for .webreq files)
+        webcrawler_pages = []
+        if is_webreq:
+            print('Reading webcrawler results...')
+            webcrawler_pages = parse_webcrawler_result(file_uri)
+            if webcrawler_pages:
+                print(f'WebCrawler: found {len(webcrawler_pages)} pages')
+            else:
+                print('WebCrawler: no result found')
+
+        # 7. Merge preprocessing results into existing segment files
+        # For text/spreadsheet files, use actual chunk count from format-parser (may differ from estimated)
+        # For office documents, use actual page/slide count from format-parser
+        # For webreq files, use actual page count from webcrawler (may differ from placeholder)
+        if is_office_doc and parser_results:
+            segment_count = len(parser_results)
+            segment_indices = list(range(segment_count))
+            print(f'Office document: using {segment_count} pages from format-parser')
+            # Copy page/slide images to preprocessed/ folder
+            copy_office_document_images(file_uri, parser_results)
+        elif is_spread and parser_results:
+            segment_count = len(parser_results)
+            segment_indices = list(range(segment_count))
+            print(f'Spreadsheet: using {segment_count} sheets from format-parser')
+        elif is_text and parser_results:
+            segment_count = len(parser_results)
+            segment_indices = list(range(segment_count))
+            print(f'Text file: using {segment_count} chunks from format-parser')
+        elif is_webreq and webcrawler_pages:
+            segment_count = len(webcrawler_pages)
+            segment_indices = list(range(segment_count))
+            print(f'WebCrawler: using {segment_count} pages')
+        else:
+            segment_count = len(preprocessor_segments)
+            segment_indices = [seg['segment_index'] for seg in preprocessor_segments]
+
+        for i in segment_indices:
+            # For text files, get segment info from preprocessor if available
+            seg = next((s for s in preprocessor_segments if s['segment_index'] == i), None)
+
+            # Read existing segment data (created by segment-prep)
+            segment_data = get_segment_analysis(file_uri, i)
+            if segment_data is None:
+                # Fallback: create new if not exists
+                segment_data = {
+                    'segment_index': i,
+                    'segment_type': seg.get('segment_type', 'TEXT' if (is_text or is_spread) else 'PAGE') if seg else ('TEXT' if (is_text or is_spread) else 'PAGE'),
+                    'image_uri': seg.get('image_uri', '') if seg else '',
+                    'ai_analysis': [],
+                }
+                # Media-specific fields (video/audio)
+                if is_media:
+                    segment_data['file_uri'] = seg.get('file_uri', file_uri) if seg else file_uri
+
+            # Update status to ANALYZING
+            segment_data['status'] = SegmentStatus.ANALYZING
+
+            # Ensure media has file_uri
+            if is_media and 'file_uri' not in segment_data:
+                segment_data['file_uri'] = seg.get('file_uri', file_uri)
+
+            # Merge BDA results (only when use_bda=true and BDA produced results)
+            if use_bda and i in bda_results:
+                bda_data = bda_results[i]
+                segment_data['bda_indexer'] = bda_data.get('bda_indexer', '')
+                # Override segment type from BDA if present
+                if bda_data.get('segment_type'):
+                    segment_data['segment_type'] = bda_data['segment_type']
+            elif 'bda_indexer' not in segment_data:
+                segment_data['bda_indexer'] = ''
+
+            # Merge OCR results
+            if i in ocr_results:
+                ocr_data = ocr_results[i]
+                segment_data['paddleocr'] = ocr_data.get('paddleocr', '')
+                segment_data['paddleocr_blocks'] = ocr_data.get('paddleocr_blocks')
+            elif 'paddleocr' not in segment_data:
+                segment_data['paddleocr'] = ''
+                segment_data['paddleocr_blocks'] = None
+
+            # Merge format parser results
+            if i in parser_results:
+                parser_data = parser_results[i]
+                segment_data['format_parser'] = parser_data.get('format_parser', '')
+                # For text/spreadsheet files, also merge text_content
+                if (is_text or is_spread) and 'text_content' in parser_data:
+                    segment_data['text_content'] = parser_data['text_content']
+                # For office documents, set image_uri from preprocessed path
+                if is_office_doc and parser_data.get('image_uri'):
+                    doc_bucket, doc_base = get_document_base_path(file_uri)
+                    segment_data['image_uri'] = f's3://{doc_bucket}/{doc_base}/preprocessed/page_{i:04d}.png'
+            elif 'format_parser' not in segment_data:
+                segment_data['format_parser'] = ''
+
+            # Merge transcribe results (for video/audio - applies to all segments)
+            if is_media and transcribe_data:
+                segment_data['transcribe'] = transcribe_data.get('transcribe', '')
+                segment_data['transcribe_segments'] = transcribe_data.get('transcribe_segments', [])
+            elif is_media:
+                if 'transcribe' not in segment_data:
+                    segment_data['transcribe'] = ''
+                if 'transcribe_segments' not in segment_data:
+                    segment_data['transcribe_segments'] = []
+
+            # Merge webcrawler results (for .webreq files)
+            if is_webreq and i < len(webcrawler_pages):
+                page_data = webcrawler_pages[i]
+                segment_data['webcrawler_content'] = page_data.get('webcrawler_content', '')
+                segment_data['source_url'] = page_data.get('source_url', '')
+                segment_data['page_title'] = page_data.get('page_title', '')
+                segment_data['instruction'] = page_data.get('instruction', '')
+                segment_data['segment_type'] = 'WEB'
+                segment_data['image_uri'] = ''
+            elif is_webreq:
+                if 'webcrawler_content' not in segment_data:
+                    segment_data['webcrawler_content'] = ''
+                if 'source_url' not in segment_data:
+                    segment_data['source_url'] = ''
+                if 'page_title' not in segment_data:
+                    segment_data['page_title'] = ''
+                if 'instruction' not in segment_data:
+                    segment_data['instruction'] = ''
+
+            # Save merged segment to S3
+            save_segment_analysis(file_uri, i, segment_data)
+            print(f'Merged segment {i}')
+
+        # Update workflow total_segments when segment count was overridden
+        # (office docs from format-parser pages/slides, text/spreadsheet files from format-parser chunks, webreq from webcrawler pages)
+        if (is_office_doc and parser_results) or (is_spread and parser_results) or (is_text and parser_results) or (is_webreq and webcrawler_pages):
+            entity_type = get_entity_prefix(file_type)
+            update_workflow_total_segments(document_id, workflow_id, segment_count, entity_type)
+            print(f'Updated workflow total_segments to {segment_count}')
+
+        record_step_complete(
+            workflow_id,
+            StepName.SEGMENT_BUILDER,
+            segment_count=segment_count
+        )
+
+        print(f'Built {segment_count} segments')
+
+        project_id = event.get('project_id', 'default')
+        language = event.get('language') or get_project_language(project_id)
+        document_prompt = event.get('document_prompt', '')
+
+        return {
+            'workflow_id': workflow_id,
+            'document_id': document_id,
+            'project_id': project_id,
+            'file_uri': file_uri,
+            'file_type': file_type,
+            'segment_count': segment_count,
+            'segment_ids': list(range(segment_count)),
+            'language': language,
+            'document_prompt': document_prompt,
+            'is_reanalysis': event.get('is_reanalysis', False)
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f'Error building segments: {error_msg}')
+        record_step_error(workflow_id, StepName.SEGMENT_BUILDER, error_msg)
+        entity_type = get_entity_prefix(file_type)
+        update_workflow_status(document_id, workflow_id, WorkflowStatus.FAILED, entity_type=entity_type, error=error_msg)
+        raise
