@@ -1,0 +1,170 @@
+version: 0.2
+# Lean deploy: serverless-only stacks (no VPC/NAT, Neptune, ElastiCache, ALB/Fargate, WAF).
+# Env: REPO_URL, VERSION (branch/tag/sha), AWS_ACCOUNT_ID, AWS_DEFAULT_REGION, ADMIN_USER_EMAIL,
+#      DEPLOY_STACKS (optional, space separated), CDK_CONTEXT_ARGS (optional '-c k=v ...'),
+#      HOTSWAP ("true" = code-only update through --hotswap-fallback, much faster),
+#      NODE_OPTIONS, IDP_RESERVED_CONCURRENCY (deploy.sh passes the same values as the full edition),
+#      CACHE_BUCKET (optional): S3 bucket of the Rust build cache (deploy.sh creates it, objects expire after 7 days),
+#      CACHE_RESTORE ("false" = compile the Rust Lambdas from scratch and replace their cache).
+# CodeBuild fails a multi-line command only when its last line fails, so every block starts with set -e
+# and ends with a command whose status is the block's result. The two Rust cache blocks are best effort
+# instead: they end with true, and any cache problem only means a normal (cold) Rust build.
+phases:
+  install:
+    runtime-versions:
+      nodejs: 22
+      python: 3.13
+    commands:
+      - npm install -g pnpm@10 aws-cdk@2 --no-fund --no-audit --loglevel=error
+      - pip install --quiet uv
+  pre_build:
+    commands:
+      - git clone --depth 1 --branch "$VERSION" "$REPO_URL" /tmp/project || (git clone "$REPO_URL" /tmp/project && git -C /tmp/project checkout "$VERSION")
+      - cd /tmp/project
+      - find /tmp/project -name ".python-version" -exec sh -c 'echo "3.13" > "$1"' _ {} \;
+      - cd /tmp/project && pnpm install --frozen-lockfile --prefer-offline --reporter=append-only > /tmp/pnpm-install.log 2>&1 || (tail -40 /tmp/pnpm-install.log; exit 1)
+      - tail -3 /tmp/pnpm-install.log
+  build:
+    commands:
+      - cd /tmp/project
+      - START=$(date +%s)
+      - pnpm nx run-many -t compile,bundle -p @idp-v2/infra @idp-v2/frontend --parallel=6
+      - echo "build took $(( $(date +%s) - START ))s"
+      - |
+        set -e
+        STATUS=$(aws cloudformation describe-stacks --stack-name CDKToolkit --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo NOT_FOUND)
+        if [ "$STATUS" = "NOT_FOUND" ] || [ "$STATUS" = "ROLLBACK_COMPLETE" ]; then
+          aws cloudformation delete-stack --stack-name CDKToolkit 2>/dev/null || true
+          aws cloudformation wait stack-delete-complete --stack-name CDKToolkit 2>/dev/null || true
+          npx cdk bootstrap aws://$AWS_ACCOUNT_ID/$AWS_DEFAULT_REGION --require-approval never
+        fi
+      - |
+        set -e
+        # The optional CloudFront WAF (-c enableWaf=true) lives in us-east-1 and needs a bootstrap there.
+        case "$CDK_CONTEXT_ARGS" in *enableWaf=true*)
+          S=$(aws cloudformation describe-stacks --region us-east-1 --stack-name CDKToolkit --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo NOT_FOUND)
+          if [ "$S" = "NOT_FOUND" ] || [ "$S" = "ROLLBACK_COMPLETE" ]; then
+            aws cloudformation delete-stack --region us-east-1 --stack-name CDKToolkit 2>/dev/null || true
+            aws cloudformation wait stack-delete-complete --region us-east-1 --stack-name CDKToolkit 2>/dev/null || true
+            npx cdk bootstrap aws://$AWS_ACCOUNT_ID/us-east-1 --require-approval never
+          fi ;;
+        esac
+      - cd /tmp/project/packages/infra && npx cdk context --clear 2>/dev/null || true
+      - |
+        # Rust build cache: restore. The Rust Lambdas (packages/lambda/*/Cargo.toml) are ~18 of the ~19 min of
+        # CDK bundling. cargo-lambda compiles them in Docker with the crate folder mounted, so cargo's target/
+        # folder lands in packages/lambda/<crate>/target. Putting it back lets cargo reuse every compiled
+        # dependency; cargo itself decides what is stale. (cdk.out is not cached: these assets use output
+        # hashes, which CDK bundles again on every synth anyway.)
+        C=/tmp/rust-cache
+        if [ -n "$CACHE_BUCKET" ]; then
+          START=$(date +%s); mkdir -p $C; cd /tmp/project
+          if command -v zstd >/dev/null 2>&1; then EXT=tar.zst; X=--use-compress-program=zstd; else EXT=tar; X=; fi
+          # The image cargo-lambda-cdk bundles with (pulled here instead of at its first docker run).
+          I=ghcr.io/cargo-lambda/cargo-lambda:latest
+          docker image inspect $I >/dev/null 2>&1 || docker pull -q $I >/dev/null 2>&1 || true
+          IMG=$(docker image inspect --format '{{.Id}}' $I 2>/dev/null | cut -c8-19)
+          if [ -z "$IMG" ]; then echo "rust cache: off for this build (no $I image)" | tee -a /tmp/build-recap.txt; fi
+          for M in packages/lambda/*/Cargo.toml; do
+            if [ -z "$IMG" ] || [ ! -f "$M" ]; then continue; fi
+            D=${M%/Cargo.toml}; N=${D##*/}
+            # The key changes with the crate's dependencies, the toolchain image and the CPU: such a build starts clean.
+            echo "rust-target/$N/$(uname -m)-$IMG-$(cat $D/Cargo.toml $D/Cargo.lock 2>/dev/null | sha256sum | cut -c1-16).$EXT" > $C/$N.key
+            git rev-parse "HEAD:$D" > $C/$N.tree 2>/dev/null || : > $C/$N.tree
+            (
+              A=$C/$N.$EXT; T=$(cat $C/$N.tree)
+              if [ "$CACHE_RESTORE" = "false" ]; then R="not restored (--no-cache)"
+              elif ! E=$(aws s3 cp "s3://$CACHE_BUCKET/$(cat $C/$N.key)" $A --only-show-errors 2>&1); then
+                case "$E" in *404*|*"does not exist"*) R="not cached yet";; *) R="download failed: $E";; esac
+              elif ! tar $X -xf $A -C $D; then
+                rm -rf $D/target; R="archive unreadable, compiled from scratch"
+              elif [ -n "$T" ] && [ "$(cat $D/target/.idp-source-tree 2>/dev/null)" = "$T" ]; then
+                # Same sources (git tree) as the cached build: an old mtime tells cargo the crate itself is fresh too.
+                git ls-files -z -- $D | xargs -0 -r touch -c -h -d @946684800 || true
+                R="restored $(du -sh $D/target | cut -f1), sources unchanged"
+              else
+                R="restored $(du -sh $D/target | cut -f1), the crate's own code is compiled again"
+              fi
+              rm -f $A
+              echo "rust cache: $N $R" | tee -a /tmp/build-recap.txt
+            ) &
+          done
+          wait
+          touch $C/synth-start
+          echo "rust cache restore took $(( $(date +%s) - START ))s" | tee -a /tmp/build-recap.txt
+        fi
+        true
+      - |
+        set -e
+        cd /tmp/project/packages/infra
+        START=$(date +%s)
+        RC=0
+        npx cdk synth --quiet --output /tmp/project/dist/packages/infra/cdk.out $CDK_CONTEXT_ARGS || RC=$?
+        echo "cdk synth took $(( $(date +%s) - START ))s (exit $RC)" | tee -a /tmp/build-recap.txt
+        [ "$RC" -eq 0 ]
+      - |
+        # Rust build cache: save, right after the synth, so a build that the 45-minute cap stops later still leaves it.
+        C=/tmp/rust-cache
+        if [ -n "$CACHE_BUCKET" ] && [ -f $C/synth-start ]; then
+          START=$(date +%s); cd /tmp/project
+          for K in $C/*.key; do
+            if [ ! -f "$K" ]; then continue; fi
+            N=$(basename $K .key); D=packages/lambda/$N; T=$(cat $C/$N.tree)
+            case "$(cat $K)" in *.tar.zst) X=--use-compress-program=zstd;; *) X=;; esac
+            if [ ! -d $D/target ]; then echo "rust cache: $N was not built, nothing saved" | tee -a /tmp/build-recap.txt; continue; fi
+            # cargo wrote to target/ in this build, so the crate's own code in it is compiled from this commit's tree.
+            if F=$(find $D/target -newer $C/synth-start -print -quit 2>/dev/null); then
+              if [ -n "$F" ] && [ -n "$T" ]; then echo "$T" > $D/target/.idp-source-tree; elif [ -n "$F" ]; then rm -f $D/target/.idp-source-tree; fi
+            else
+              rm -f $D/target/.idp-source-tree
+            fi
+            (
+              A=$C/$N.archive
+              if ZSTD_NBTHREADS=$(nproc) tar $X -cf $A -C $D target && E=$(aws s3 cp $A "s3://$CACHE_BUCKET/$(cat $K)" --only-show-errors 2>&1); then
+                R="saved ($(du -h $A | cut -f1))"
+              else
+                R="not saved: ${E:-the archive failed}"
+              fi
+              rm -f $A
+              echo "rust cache: $N $R" | tee -a /tmp/build-recap.txt
+            ) &
+          done
+          wait
+          echo "rust cache save took $(( $(date +%s) - START ))s" | tee -a /tmp/build-recap.txt
+        fi
+        true
+      - |
+        set -e
+        cd /tmp/project/packages/infra
+        FLAGS="--require-approval=never --concurrency=12 --progress=events"
+        if [ "$HOTSWAP" = "true" ]; then FLAGS="$FLAGS --hotswap-fallback"; fi
+        START=$(date +%s)
+        RC=0
+        # Deploys the assembly the synth step built: no second synth, no second bundling.
+        npx cdk deploy --app /tmp/project/dist/packages/infra/cdk.out ${DEPLOY_STACKS:---all} $FLAGS || RC=$?
+        echo "cdk deploy took $(( $(date +%s) - START ))s (exit $RC)"
+        [ "$RC" -eq 0 ]
+  post_build:
+    commands:
+      - |
+        set -e
+        POOL=$(aws cloudformation describe-stacks --stack-name IDP-V2-Application \
+          --query 'Stacks[0].Outputs[?contains(OutputKey,`UserPoolId`)].OutputValue' --output text 2>/dev/null || true)
+        if [ -n "$POOL" ] && [ "$POOL" != "None" ] && [ -n "$ADMIN_USER_EMAIL" ]; then
+          ADMIN=$(echo "$ADMIN_USER_EMAIL" | cut -d'@' -f1)
+          if ! aws cognito-idp admin-get-user --user-pool-id "$POOL" --username "$ADMIN" >/dev/null 2>&1; then
+            # No fixed password: Cognito generates a temporary one and emails it to ADMIN_USER_EMAIL.
+            aws cognito-idp admin-create-user --user-pool-id "$POOL" --username "$ADMIN" \
+              --user-attributes Name=email,Value="$ADMIN_USER_EMAIL" Name=email_verified,Value=true \
+              Name=given_name,Value=Admin Name=family_name,Value=User --desired-delivery-mediums EMAIL >/dev/null \
+              && echo "Admin user $ADMIN created; temporary password emailed to $ADMIN_USER_EMAIL"
+          fi
+        fi
+      - |
+        set -e
+        URL=$(aws cloudformation describe-stacks --stack-name IDP-V2-Application \
+          --query 'Stacks[0].Outputs[?contains(OutputKey,`DistributionDomainName`)].OutputValue' --output text 2>/dev/null || true)
+        if [ -n "$URL" ] && [ "$URL" != "None" ]; then echo "FRONTEND_URL=https://$URL"; fi
+      # Repeats the synth and Rust cache lines at the end of the log, where deploy.sh reads its summary.
+      - cat /tmp/build-recap.txt 2>/dev/null || true
+      - echo "Deployment finished at $(date)"

@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CodeBuild project for deploying Sample AWS IDP Pipeline
+
+Parameters:
+  AdminUserEmail:
+    Type: String
+    Default: ''
+    Description: Admin user email for Cognito authentication (optional for targeted stack deploys)
+
+  RepoUrl:
+    Type: String
+    Default: 'https://github.com/prasoongupta925/dsa-document-ai.git'
+    Description: Repository URL
+
+  Version:
+    Type: String
+    Default: 'main'
+    Description: Branch or tag to deploy
+
+Resources:
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+      Policies:
+        - PolicyName: CodeBuildIAMPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:PassRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:CreatePolicy
+                  - iam:DeletePolicy
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - iam:ListPolicyVersions
+                  - iam:CreateServiceLinkedRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:UpdateRole
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                Resource: '*'
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: sample-aws-idp-pipeline-deploy
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/amazonlinux-aarch64-standard:3.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ADMIN_USER_EMAIL
+            Value: !Ref AdminUserEmail
+          - Name: REPO_URL
+            Value: !Ref RepoUrl
+          - Name: VERSION
+            Value: !Ref Version
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref 'AWS::Region'
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref 'AWS::AccountId'
+          - Name: DEPLOY_STACKS
+            Value: ''
+          - Name: CDK_CONTEXT_ARGS
+            Value: ''
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                nodejs: 22
+                python: 3.13
+              commands:
+                - npm install -g pnpm@10 aws-cdk@latest
+
+            pre_build:
+              commands:
+                - git clone $REPO_URL /tmp/project
+                - cd /tmp/project
+                - git checkout $VERSION
+                - find /tmp/project -name ".python-version" -exec sh -c 'echo "3.13" > "$1"' _ {} \;
+                - pip install uv
+                - pnpm install --frozen-lockfile
+            build:
+              commands:
+                - cd /tmp/project
+                - pnpm nx run-many -t lint,compile,test,bundle -p @idp-v2/infra @idp-v2/frontend
+                - |
+                  STACK_STATUS=$(aws cloudformation describe-stacks --stack-name CDKToolkit --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "NOT_FOUND")
+                  if [ "$STACK_STATUS" = "NOT_FOUND" ] || [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
+                    aws cloudformation delete-stack --stack-name CDKToolkit 2>/dev/null || true
+                    aws cloudformation wait stack-delete-complete --stack-name CDKToolkit 2>/dev/null || true
+                    npx cdk bootstrap aws://$AWS_ACCOUNT_ID/$AWS_DEFAULT_REGION --require-approval never
+                  fi
+                - |
+                  # The CloudFront WAF stack is always in us-east-1 (CloudfrontWebAcl in
+                  # static-website.ts), so us-east-1 needs a CDK bootstrap as well.
+                  if [ "$AWS_DEFAULT_REGION" != "us-east-1" ]; then
+                    WAF_TOOLKIT_STATUS=$(aws cloudformation describe-stacks --region us-east-1 --stack-name CDKToolkit --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "NOT_FOUND")
+                    if [ "$WAF_TOOLKIT_STATUS" = "NOT_FOUND" ] || [ "$WAF_TOOLKIT_STATUS" = "ROLLBACK_COMPLETE" ]; then
+                      aws cloudformation delete-stack --region us-east-1 --stack-name CDKToolkit 2>/dev/null || true
+                      aws cloudformation wait stack-delete-complete --region us-east-1 --stack-name CDKToolkit 2>/dev/null || true
+                      npx cdk bootstrap aws://$AWS_ACCOUNT_ID/us-east-1 --require-approval never
+                    fi
+                  fi
+                - cd /tmp/project/packages/infra && npx cdk context --clear 2>/dev/null || true
+                - |
+                  cd /tmp/project/packages/infra
+                  # CDK_CONTEXT_ARGS: optional '-c key=value ...' from deploy.sh --context
+                  if [ -n "$DEPLOY_STACKS" ]; then
+                    npx cdk deploy $DEPLOY_STACKS --require-approval=never --concurrency=4 $CDK_CONTEXT_ARGS
+                  else
+                    npx cdk deploy --all --require-approval=never --concurrency=4 $CDK_CONTEXT_ARGS
+                  fi
+            post_build:
+              commands:
+                - |
+                  USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name IDP-V2-Application \
+                    --query 'Stacks[0].Outputs[?contains(OutputKey,`UserPoolId`)].OutputValue' --output text 2>/dev/null)
+                  if [ -n "$USER_POOL_ID" ] && [ "$USER_POOL_ID" != "None" ]; then
+                    TEMP_PASSWORD="TempPass123!"
+                    ADMIN_USERNAME=$(echo "$ADMIN_USER_EMAIL" | cut -d'@' -f1)
+                    EXISTING=$(aws cognito-idp admin-get-user --user-pool-id "$USER_POOL_ID" --username "$ADMIN_USERNAME" 2>/dev/null && echo "exists" || echo "")
+                    if [ -z "$EXISTING" ]; then
+                      aws cognito-idp admin-create-user \
+                        --user-pool-id "$USER_POOL_ID" \
+                        --username "$ADMIN_USERNAME" \
+                        --user-attributes Name=email,Value="$ADMIN_USER_EMAIL" Name=email_verified,Value=true Name=given_name,Value=Admin Name=family_name,Value=User \
+                        --temporary-password "$TEMP_PASSWORD"
+                      echo "Admin user created: $ADMIN_USERNAME ($ADMIN_USER_EMAIL)"
+                    else
+                      echo "Admin user already exists: $ADMIN_USERNAME"
+                    fi
+                    echo "ADMIN_EMAIL=$ADMIN_USER_EMAIL"
+                    echo "TEMP_PASSWORD=$TEMP_PASSWORD"
+                  fi
+                - |
+                  FRONTEND_URL=$(aws cloudformation describe-stacks --stack-name IDP-V2-Application \
+                    --query 'Stacks[0].Outputs[?contains(OutputKey,`DistributionDomainName`)].OutputValue' --output text 2>/dev/null)
+                  if [ -n "$FRONTEND_URL" ] && [ "$FRONTEND_URL" != "None" ]; then
+                    echo "FRONTEND_URL=https://$FRONTEND_URL"
+                  fi
+                - echo "Deployment completed at $(date)"
+      Cache:
+        Type: LOCAL
+        Modes:
+          - LOCAL_DOCKER_LAYER_CACHE
+      TimeoutInMinutes: 180
+
+Outputs:
+  ProjectName:
+    Value: !Ref CodeBuildProject
+    Description: CodeBuild project name
