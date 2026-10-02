@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "importHelpers": true,
+    "isolatedModules": true,
+    "lib": ["es2022"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmitOnError": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "es2022",
+    "customConditions": ["@idp-v2/source"],
+    "baseUrl": ".",
+    "rootDir": ".",
+    "paths": {
+      ":idp-v2/backend": ["packages/app/src/index.ts"],
+      ":idp-v2/common-constructs": ["packages/common/constructs/src/index.ts"],
+      ":idp-v2/frontend": ["packages/frontend/src/index.ts"],
+      ":idp-v2/infra": ["packages/infra/src/index.ts"]
+    }
+  }
+}

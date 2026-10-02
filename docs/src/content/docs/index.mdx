@@ -1,0 +1,36 @@
+---
+title: "Sample AWS IDP Pipeline"
+description: "AI-powered Intelligent Document Processing (IDP) Prototype for Unstructured Data"
+template: splash
+hero:
+  tagline: AI-powered Intelligent Document Processing (IDP) Prototype for Unstructured Data
+  image:
+    file: ./assets/logo.png
+  actions:
+    - text: Get Started
+      link: /sample-aws-idp-pipeline/en/
+      icon: right-arrow
+    - text: GitHub
+      link: https://github.com/aws-samples/sample-aws-idp-pipeline
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Key Features
+
+<CardGrid stagger>
+	<Card title="Document Processing" icon="document">
+		Analyze documents, videos, audio files, and images with AI-powered OCR and preprocessing pipelines.
+	</Card>
+	<Card title="AI Analysis" icon="star">
+		Per-segment deep analysis with Claude Sonnet 4.6 Vision ReAct Agent and automatic summarization.
+	</Card>
+	<Card title="Hybrid Search" icon="magnifier">
+		LanceDB vector search + Full-Text Search with Korean morphological analysis and Cohere Rerank.
+	</Card>
+	<Card title="AI Chat" icon="comment">
+		Conversational AI interface with MCP tools for document search, artifact management, and code execution.
+	</Card>
+</CardGrid>

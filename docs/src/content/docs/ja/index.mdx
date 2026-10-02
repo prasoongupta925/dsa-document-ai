@@ -1,0 +1,373 @@
+---
+title: "Sample AWS IDP Pipeline"
+description: "非構造化データのためのAI駆動インテリジェント文書処理（IDP）プロトタイプ"
+---
+
+## 概要
+
+非構造化データを実用的なインサイトに変換するAI駆動IDPプロトタイプです。**文書、動画、音声、画像**を分析し、ハイブリッド検索（ベクトル＋キーワード）、ナレッジグラフ探索、対話型AIインターフェースを提供します。AWS CDKで構築されたNxモノレポ構成で、リアルタイムワークフローステータス通知をサポートします。
+
+:::danger
+開発中のバージョンです。本番環境にデプロイしないでください。
+:::
+
+:::note
+これはAWSサンプルプロジェクトです。実験、評価、開発目的で設計されています。
+:::
+
+![Main Screen](../assets/main-screen.png)
+
+## 機能
+
+- **インテリジェント文書処理（IDP）**
+  - Bedrock Data Automation（BDA）による文書分析
+  - [PaddleOCR（Lambda CPU + SageMaker GPU）によるOCR処理](./ocr.md)
+  - AWS Transcribeによる音声/動画テキスト変換
+  - ファイルタイプ自動検出と[前処理パイプラインルーティング](./preprocessing.md)
+
+- **[AI駆動分析](./analysis.md)**
+  - Claude Sonnet 4.6 Vision ReAct Agentによるセグメント別深層分析
+  - TwelveLabs Pegasus 1.2 + Amazon Nova Lite 2による動画分析
+  - Claude Sonnet 4.6 / Haiku 4.5による文書要約生成
+  - Nova Embedによる1024次元ベクトル埋め込み
+
+- **[ハイブリッド検索](./vectordb.md)**
+  - LanceDBベクトル検索 + FTS（全文検索）
+  - Lindera / ICU4Xトークナイザーによるキーワード抽出
+  - Bedrock Cohere Rerank v3.5による結果再ランキング
+
+- **ナレッジグラフ**
+  - Neptune DB Serverlessによるエンティティ・関係性の保存
+  - LLMベースのエンティティ抽出と関係マッピング（分析時に自動構築）
+  - グラフ探索による文書間の関連ページ発見
+  - プロジェクトレベル・文書レベルのグラフ可視化
+
+- **AIチャット（Agent Core）**
+  - Bedrock Agent Core基盤のIDP Agent
+  - MCP Gatewayによるツール呼び出し（検索、グラフ、アーティファクト管理）
+  - S3ベースのセッション管理で会話コンテキスト維持
+  - プロジェクト別カスタムエージェントとシステムプロンプト
+
+- **リアルタイム通知**
+  - WebSocket API + ElastiCache Redisによるリアルタイムステータス更新
+  - DynamoDB Streamsによるワークフローイベント検出
+  - ステップ進捗、アーティファクト変更、セッション状態のリアルタイム反映
+
+- **対応ファイル形式**
+
+  | ファイルタイプ | 対応形式 |
+  |----------------|----------|
+  | 文書 | PDF, DOCX, DOC, TXT, MD |
+  | 画像 | PNG, JPG, JPEG, GIF, TIFF, WebP |
+  | 動画 | MP4, MOV, AVI, MKV, WebM |
+  | 音声 | MP3, WAV, FLAC, M4A |
+  | プレゼンテーション | PPTX, PPT |
+  | CAD | DXF |
+  | ウェブ | .webreq（URLクローリング） |
+
+## アーキテクチャ
+
+![Architecture](../assets/architecture.png)
+
+### CDKスタック構成
+
+```
+@idp-v2/infra（15スタック）
++-- VpcStack              - VPC (10.0.0.0/16, 2 AZ, NAT Gateway)
++-- NeptuneStack          - Neptune DB Serverless（ナレッジグラフ）
++-- StorageStack          - S3バケット、DynamoDBテーブル、ElastiCache Redis
++-- EventStack            - S3 EventBridge、SQSキュー、ファイルタイプ検出Lambda
++-- OcrStack              - PaddleOCR（Lambda CPU + SageMaker GPU）
++-- BdaStack              - Bedrock Data Automationコンシューマー
++-- TranscribeStack       - AWS Transcribeコンシューマー
++-- LanceServiceStack     - LanceDB Service（Rust）+ Tokaトークナイザー（Rust）
++-- WorkflowStack         - Step Functionsワークフロー（Distributed Map）
++-- WebsocketStack        - WebSocket API、リアルタイム通知
++-- McpStack              - MCP Gateway（検索、グラフ、アーティファクトツール）
++-- WorkerStack           - WebSocketメッセージ処理
++-- AgentStack            - Bedrock Agent Core（IDP Agent）
++-- WebcrawlerStack       - ウェブクローリングエージェント（Bedrock Agent Core）
+'-- ApplicationStack      - Backend（ECS Fargate）、Frontend（CloudFront）、Cognito
+```
+
+### コアワークフロー
+
+#### 1. 文書アップロード＆分析パイプライン
+
+ユーザーがPresigned URLでS3に文書をアップロードすると、EventBridgeがObjectCreatedイベントを検出します。Type Detection Lambdaがファイルタイプを判別してSQSにルーティングし、前処理が並列に実行されます（OCR、BDA、Transcribe）。前処理完了後、Step Functionsワークフローがセグメント分割、AI分析、ベクトル埋め込み、ナレッジグラフ構築、文書要約を実行します。
+
+```
+S3 Upload (Presigned URL)
+  -> EventBridge (ObjectCreated)
+    -> Type Detection Lambda
+      +- OCR Queue     -> PaddleOCR (Lambda/SageMaker)  -- オプション
+      +- BDA Queue     -> Bedrock Data Automation        -- オプション
+      +- Transcribe Queue -> AWS Transcribe              -- オプション
+      +- WebCrawler Queue -> Bedrock Agent Core          -- 自動（.webreq）
+      '- Workflow Queue -> Step Functions
+
+  -> Step Functions Workflow
+      Segment Prep -> Wait for Preprocess -> Format Parser -> Build Segments
+        -> Distributed Map (max 30)
+            +- Segment Analyzer (Claude Sonnet 4.6 Vision / Pegasus 1.2 / Nova Lite 2)
+            '- Analysis Finalizer -> SQS -> LanceDB Writer
+        -> Document Summarizer (Claude Sonnet 4.6)
+            -> Vector Embedding (Nova 1024d) -> LanceDB
+        -> Graph Builder（エンティティ抽出）
+            -> Neptune DB（エンティティ、関係性）
+```
+
+#### 2. リアルタイム通知（WebSocket）
+
+ワークフローの進行状態がDynamoDBに記録されると、DynamoDB Streamsが変更を検出します。VPC内部のWorkflowStream LambdaがRedisでアクティブ接続を照会し、WebSocket APIを通じてイベントをプッシュすることで、フロントエンドでリアルタイムにステータスを反映します。
+
+```
+DynamoDB Streams（状態変更検出）
+  -> WorkflowStream Lambda (VPC)
+    -> Redis（接続照会）
+      -> WebSocket API -> Frontend
+        +- ステップ進捗
+        +- アーティファクト変更
+        '- セッション状態更新
+```
+
+#### 3. AIチャット（Agent Core）
+
+ユーザーの質問がAPI Gatewayを通じてBedrock Agent Coreに送信されます。IDP AgentがMCP Gatewayを通じてツールを呼び出し、Search Toolでハイブリッド検索、Graph Toolでグラフ探索を実行し、Artifact Toolで成果物を管理します。セッション履歴はS3に保存され、会話コンテキストが維持されます。
+
+```
+User Query
+  -> API Gateway REST (SigV4)
+    -> Bedrock Agent Core Runtime
+      '- IDP Agent (Claude Sonnet 4.6)
+          -> MCP Gateway
+            +- Search Tool Lambda -> LanceDB Service -> Hybrid Search (Vector + FTS)
+            +- Graph Tool Lambda  -> Graph Service   -> Neptune（グラフ探索）
+            +- Artifact Tool Lambda -> S3
+            '- Code Interpreter -> Python実行
+          -> S3 (Session Load/Save)
+```
+
+#### 4. バックエンドAPI（HTTP）
+
+API Gateway HTTP（IAM認証）からVPC Linkを通じてPrivate ALBを経由し、ECS FargateのFastAPIに接続されます。プロジェクト/文書管理、ワークフロー照会、ハイブリッド検索、チャットセッション、カスタムエージェント、ナレッジグラフ、アーティファクト管理など、すべてのデータアクセスを担当します。
+
+```
+API Gateway HTTP (IAM Auth)
+  -> VPC Link -> Private ALB -> ECS Fargate (FastAPI)
+    +- DynamoDB     -- プロジェクト/文書CRUD、ワークフロー状態
+    +- LanceDB      -- ハイブリッド検索 (Vector + FTS) via Lambda invoke
+    +- Neptune      -- ナレッジグラフ照会
+    +- Bedrock      -- Cohere Rerank v3.5
+    +- S3           -- Presigned URL、セッション (DuckDB)、エージェント、アーティファクト
+    +- Redis        -- クエリキャッシュ
+    +- Step Functions -- 再分析トリガー
+    '- Lambda       -- QA Regenerator
+```
+
+### 主要設計判断
+
+| 判断 | 理由 |
+|------|------|
+| Step Functionsペイロード -> DynamoDB中間ストレージ | Step Functions 256KBペイロード制限の回避 |
+| セグメントインデックスのみワークフローに渡す | 3000ページ以上の文書サポート |
+| LanceDB + S3 Express One Zone | ベクトル検索に最適化された低レイテンシストレージ |
+| Neptune DB Serverless | エンティティ関係のナレッジグラフ、アイドル時ゼロスケーリング |
+| PaddleOCRデュアルバックエンド（Lambda + SageMaker） | CPUモデル（PP-OCRv5）はRust Lambda、GPUモデル（VL）はSageMaker |
+| SageMaker Auto-scaling 0->1 | コスト最適化（アイドル時Scale-to-zero） |
+| ElastiCache Redis | WebSocket接続状態管理（DynamoDB TTLより高速） |
+| DuckDBでS3直接クエリ | セッション/エージェントデータのコピーなしで照会 |
+| VPC Link + Private ALB | バックエンドをインターネットに公開しない |
+| Distributed Map（最大30並列） | Lambda同時実行制限と並列性のバランス |
+
+## はじめに
+
+### 前提条件
+
+- [Node.js](https://nodejs.org/) v18以上
+- [pnpm](https://pnpm.io/) v8以上
+- [Python](https://www.python.org/) 3.12
+- [AWS CLI](https://aws.amazon.com/cli/)（認証情報設定済み）
+- [AWS CDK](https://aws.amazon.com/cdk/) v2
+- [mise](https://mise.jdx.dev/)（タスク管理）
+
+### インストール
+
+```bash
+# リポジトリのクローン
+git clone https://github.com/aws-samples/sample-aws-idp-pipeline.git
+cd sample-aws-idp-pipeline
+
+# 依存関係のインストール
+pnpm install
+
+# 環境変数の設定
+cp .env.local.example .env.local
+# .env.localを編集してAWSプロファイルとリージョンを設定
+```
+
+### ローカル開発
+
+```bash
+# フロントエンド開発サーバー
+pnpm nx serve @idp-v2/frontend
+
+# エージェントのローカル実行
+pnpm nx serve idp_v2.idp_agent
+```
+
+## デプロイ
+
+> **Quick Deploy**: CloudShell + CodeBuildを使用して、単一スクリプトでパイプライン全体をデプロイできます。[Quick Deploy Guide](./deployment.md)を参照してください。
+
+### miseを使用したデプロイ（推奨）
+
+```bash
+# miseのインストール (macOS)
+brew install mise
+
+# スタック選択デプロイ（fzfで選択）
+mise run deploy
+
+# 全体ビルド
+pnpm build:all
+```
+
+### CDK直接デプロイ
+
+```bash
+# CDKブートストラップ（初回のみ）
+pnpm nx synth @idp-v2/infra
+
+# 全スタックデプロイ
+pnpm nx deploy @idp-v2/infra
+
+# ホットスワップデプロイ（開発用）
+pnpm nx deploy @idp-v2/infra --hotswap
+
+# リソース削除
+pnpm nx destroy @idp-v2/infra
+```
+
+### 主要コマンド
+
+```bash
+# ビルド
+pnpm build:all                              # 全体ビルド
+pnpm nx build @idp-v2/infra                 # 単一パッケージビルド
+
+# テスト
+pnpm nx test @idp-v2/infra                  # テスト実行
+pnpm nx test @idp-v2/infra --update         # スナップショット更新
+
+# リント
+pnpm nx lint @idp-v2/infra                  # リント
+pnpm nx lint @idp-v2/infra --configuration=fix  # 自動修正
+```
+
+## 対応モデル
+
+### AI分析モデル
+
+| モデル | 用途 | 説明 |
+|--------|------|------|
+| Claude Sonnet 4.6 | セグメント分析 / エージェント | Vision ReAct Agent、深層文書分析 |
+| Claude Sonnet 4.6 | 文書要約 | 文書全体の要約生成 |
+| Claude Haiku 4.5 | 検索要約 | 軽量モデル、検索結果の整理 |
+| TwelveLabs Pegasus 1.2 | 動画視覚分析 | 動画を直接分析してシーンを理解 |
+| Amazon Nova Lite 2 | 動画スクリプト抽出 | 大容量コンテキストSTTベースの動画スクリプト抽出 |
+| Nova Embed Text v2 | ベクトル埋め込み | 1024次元マルチモーダル埋め込み |
+| Cohere Rerank v3.5 | 検索再ランキング | ハイブリッド検索結果最適化 |
+
+### 前処理モデル
+
+| モデル | 用途 | 説明 |
+|--------|------|------|
+| PP-OCRv5 | OCR（CPU） | Rust Lambda（MNNベース）、汎用テキスト抽出 |
+| PaddleOCR-VL | OCR（GPU） | SageMaker g5.xlarge、Vision-Languageモデル、Auto-scaling 0->1 |
+| Bedrock Data Automation | 文書分析 | 非同期文書構造分析（オプション） |
+| AWS Transcribe | 音声変換 | 音声/動画テキスト変換 |
+
+### MCPツール
+
+| ツール | 説明 |
+|--------|------|
+| search_documents | プロジェクト文書のハイブリッド検索（Vector + FTS + Rerank） |
+| graph_search | ナレッジグラフ探索による関連ページ発見 |
+| link_documents / unlink_documents | 文書間の手動関係管理 |
+| overview | プロジェクト文書の概要とサマリー |
+| save/load/edit_markdown | マークダウンアーティファクトの作成・編集 |
+| create_pdf, extract_pdf_text/tables | PDF生成とテキスト/テーブル抽出 |
+| create_docx, extract_docx_text/tables | Word文書生成とテキスト/テーブル抽出 |
+| generate_image | AI画像生成 |
+| code_interpreter | Pythonコード実行サンドボックス |
+
+## プロジェクト構成
+
+```
+sample-aws-idp-pipeline/
++-- packages/
+|   +-- agents/                    # AIエージェント
+|   |   '-- idp-agent/             # IDP Agent (Strands SDK)
+|   +-- backend/app/               # FastAPIバックエンド
+|   |   +-- main.py
+|   |   +-- config.py
+|   |   +-- ddb/                   # DynamoDBモジュール
+|   |   +-- routers/               # APIルーター
+|   |   '-- services/              # ビジネスロジック
+|   +-- common/constructs/src/     # 再利用CDKコンストラクト
+|   +-- frontend/src/              # React SPA
+|   |   +-- routes/                # ページルート
+|   |   '-- components/            # Reactコンポーネント
+|   +-- lambda/                    # MCPツールLambda
+|   |   +-- search-mcp/            # 検索ツール（ハイブリッド検索 + 要約）
+|   |   '-- graph-mcp/             # グラフツール（Neptune探索）
+|   '-- infra/src/
+|       +-- stacks/                # 14 CDKスタック
+|       +-- functions/             # Python Lambda関数
+|       |   +-- step-functions/    # ワークフロー関数
+|       |   +-- container/         # コンテナLambda（LanceDB + Graphサービス）
+|       |   +-- shared/            # 共有モジュール
+|       |   +-- websocket/         # WebSocketハンドラー
+|       |   '-- lancedb-writer/    # LanceDBライター
+|       '-- lambda-layers/         # Lambdaレイヤー
++-- docs/                          # ドキュメント（Astro）
+'-- README.md
+```
+
+## 技術スタック
+
+### インフラストラクチャ（TypeScript）
+- AWS CDK 2.230.x + Nx 22.x
+- AWS Step Functions（ワークフローオーケストレーション）
+- AWS Lambda + Lambda Layers
+- API Gateway HTTP / REST / WebSocket
+
+### バックエンド（Python）
+- FastAPI（ECS Fargate、ARM64）
+- LanceDB + S3 Express One Zone（ベクトルストレージ）
+- Neptune DB Serverless（ナレッジグラフ）
+- DynamoDB（One Table Design）
+- DuckDB（S3直接クエリ）
+
+### Lambdaサービス（Rust）
+- Lindera / ICU4X（多言語トークナイザー）
+- LanceDB Service（ベクトル検索 + FTS）
+- PaddleOCR（MNNベースCPU推論）
+
+### フロントエンド（TypeScript）
+- React 19 + TanStack Router
+- Tailwind CSS
+- AWS SDK（S3アップロード）
+- Cognito OIDC認証
+- WebSocketクライアント
+
+### AI / ML
+- Bedrock Agent Core（Strands SDK、ReActパターン）
+- Bedrock Claude Sonnet 4.6 / Haiku 4.5
+- Bedrock Nova Embed（1024次元）
+- Bedrock Cohere Rerank v3.5
+- TwelveLabs Pegasus 1.2（動画視覚分析）
+- Amazon Nova Lite 2（動画スクリプト抽出）
+- PaddleOCR（Lambda CPU + SageMaker GPU）
+- AWS Transcribe

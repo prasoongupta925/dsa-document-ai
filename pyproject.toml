@@ -1,0 +1,58 @@
+[project]
+name = "nx-workspace"
+version = "1.0.0"
+dependencies = [
+  "boto3>=1.42.0",
+  "fastapi[standard]>=0.123.0",
+  "idp_v2.backend",
+  "idp_v2.idp_agent",
+  "lancedb>=0.26.0",
+  "polars>=1.36.1",
+  "pydantic>=2.12.5",
+  "ruff>=0.14.10",
+  "tantivy>=0.25.1"
+]
+
+[tool.uv.workspace]
+members = [
+  "packages/agents/idp-agent",
+  "packages/backend",
+  "packages/agents/bidi-agent",
+  "packages/agents/research-agent",
+  "packages/lambda/pdf-mcp",
+]
+
+[tool.uv.sources."idp_v2.backend"]
+workspace = true
+
+[tool.uv.sources."idp_v2.idp_agent"]
+workspace = true
+
+[tool.uv.sources."idp_v2.research-agent"]
+workspace = true
+
+[dependency-groups]
+dev = [
+  "ruff>=0.8.2",
+  "autopep8>=2.3.1",
+  "pytest>=9.0.3",
+  "pytest-sugar>=1.0.0",
+  "pytest-cov>=6.0.0",
+  "pytest-html>=4.1.1"
+]
+
+[tool.pyright]
+reportArgumentType = false
+reportUnusedCallResult = false
+reportExplicitAny = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownParameterType = false
+reportUnknownArgumentType = false
+reportUnannotatedClassAttribute = false
+reportMissingTypeStubs = false
+reportCallInDefaultInitializer = false
+reportInvalidTypeForm = false
+reportAny = false
+reportMissingParameterType = false
+reportImplicitOverride = false

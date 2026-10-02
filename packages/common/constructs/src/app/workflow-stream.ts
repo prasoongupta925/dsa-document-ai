@@ -1,0 +1,105 @@
+import { Duration, Stack } from 'aws-cdk-lib';
+import { ITable } from 'aws-cdk-lib/aws-dynamodb';
+import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
+import {
+  Runtime,
+  Architecture,
+  StartingPosition,
+  FilterCriteria,
+  FilterRule,
+} from 'aws-cdk-lib/aws-lambda';
+import { DynamoEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import { Construct } from 'constructs';
+import * as path from 'path';
+
+export interface WorkflowStreamProps {
+  backendTable: ITable;
+  /** WebSocket connection state (StorageStack, idp-v2-ws-connections) */
+  connectionsTable: ITable;
+  websocketCallbackUrl: string;
+  websocketApiId: string;
+}
+
+export class WorkflowStream extends Construct {
+  public readonly function: NodejsFunction;
+
+  constructor(scope: Construct, id: string, props: WorkflowStreamProps) {
+    super(scope, id);
+
+    const {
+      backendTable,
+      connectionsTable,
+      websocketCallbackUrl,
+      websocketApiId,
+    } = props;
+    const stack = Stack.of(this);
+
+    this.function = new NodejsFunction(this, 'Function', {
+      entry: path.resolve(
+        process.cwd(),
+        '../../packages/lambda/workflow-stream/src/index.ts',
+      ),
+      handler: 'handler',
+      runtime: Runtime.NODEJS_22_X,
+      architecture: Architecture.ARM_64,
+      timeout: Duration.seconds(30),
+      environment: {
+        BACKEND_TABLE_NAME: backendTable.tableName,
+        WS_CONNECTIONS_TABLE_NAME: connectionsTable.tableName,
+        WEBSOCKET_CALLBACK_URL: websocketCallbackUrl,
+      },
+    });
+
+    // Grant permissions
+    backendTable.grantReadData(this.function);
+    // Query project subscribers, delete connections API Gateway reports gone
+    connectionsTable.grantReadWriteData(this.function);
+    this.function.addToRolePolicy(
+      new PolicyStatement({
+        actions: ['execute-api:ManageConnections'],
+        resources: [
+          `arn:aws:execute-api:${stack.region}:${stack.account}:${websocketApiId}/*/@connections/*`,
+        ],
+      }),
+    );
+
+    // Add DynamoDB Stream event source with filters
+    // Filter 1: DOC#/WF# records (workflow status changes for documents)
+    // Filter 2: WEB#/WF# records (workflow status changes for web crawls)
+    // Filter 3: WF#/STEP records (step progress changes)
+    this.function.addEventSource(
+      new DynamoEventSource(backendTable, {
+        startingPosition: StartingPosition.LATEST,
+        batchSize: 10,
+        retryAttempts: 3,
+        filters: [
+          FilterCriteria.filter({
+            dynamodb: {
+              Keys: {
+                PK: { S: FilterRule.beginsWith('DOC#') },
+                SK: { S: FilterRule.beginsWith('WF#') },
+              },
+            },
+          }),
+          FilterCriteria.filter({
+            dynamodb: {
+              Keys: {
+                PK: { S: FilterRule.beginsWith('WEB#') },
+                SK: { S: FilterRule.beginsWith('WF#') },
+              },
+            },
+          }),
+          FilterCriteria.filter({
+            dynamodb: {
+              Keys: {
+                PK: { S: FilterRule.beginsWith('WF#') },
+                SK: { S: FilterRule.isEqual('STEP') },
+              },
+            },
+          }),
+        ],
+      }),
+    );
+  }
+}
