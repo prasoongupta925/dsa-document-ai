@@ -1,0 +1,446 @@
+import contextlib
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Header, HTTPException, Path, Query
+from pydantic import BaseModel
+
+from app.config import get_config
+from app.ddb import (
+    Document,
+    DocumentData,
+    delete_document_item,
+    get_document_item,
+    get_project_item,
+    mark_project_updated,
+    put_document_item,
+    query_documents,
+    update_document_data,
+)
+from app.ddb.facts import delete_facts_item
+from app.ddb.workflows import delete_workflow_item, get_steps_batch, query_workflows
+from app.lancedb import DeleteByWorkflowInput, LanceDbError
+from app.lancedb import delete_by_workflow as lancedb_delete_by_workflow
+from app.presigned import PresignError, check_key, check_upload, project_prefix
+from app.s3 import PRESIGNED_URL_EXPIRES_IN, delete_s3_prefix, get_s3_client, presign_get, presign_put
+
+router = APIRouter(prefix="/projects/{project_id}/documents", tags=["documents"])
+
+# Project ids are "proj_" + a nanoid; the pattern keeps them safe in an S3 key and a log line.
+ProjectId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,128}$", description="Project id, e.g. proj_...")]
+
+# Audit label of the caller (the web app sends the Cognito username).
+# Authentication is AWS IAM (SigV4) at API Gateway, not this header.
+_USER_ID_PATTERN = r"^[^\x00-\x1f\x7f]{1,256}$"
+UserId = Annotated[str, Header(alias="x-user-id", pattern=_USER_ID_PATTERN)]
+OptionalUserId = Annotated[str | None, Header(alias="x-user-id", pattern=_USER_ID_PATTERN)]
+
+
+class DocumentUploadRequest(BaseModel):
+    file_name: str
+    content_type: str
+    file_size: int
+    use_bda: bool = False
+    use_ocr: bool | None = None
+    use_transcribe: bool = False
+    ocr_model: str | None = None
+    ocr_options: dict[str, object] | None = None
+    document_prompt: str | None = None
+    language: str | None = None
+    transcribe_options: dict[str, object] | None = None
+    source_url: str | None = None
+    crawl_instruction: str | None = None
+
+
+class DocumentUploadResponse(BaseModel):
+    document_id: str
+    upload_url: str
+    file_name: str
+    # Seconds the upload URL stays valid (the PUT must start within this time).
+    expires_in: int = PRESIGNED_URL_EXPIRES_IN
+
+
+class PresignedUrlResponse(BaseModel):
+    url: str
+    expires_in: int
+
+
+class DocumentResponse(BaseModel):
+    document_id: str
+    project_id: str
+    name: str
+    file_type: str
+    file_size: int
+    status: str
+    s3_key: str
+    use_bda: bool
+    use_ocr: bool | None = None
+    use_transcribe: bool = False
+    ocr_model: str | None = None
+    ocr_options: dict[str, object] | None = None
+    document_prompt: str | None = None
+    language: str | None = None
+    transcribe_options: dict[str, object] | None = None
+    source_url: str | None = None
+    crawl_instruction: str | None = None
+    created_at: str
+    updated_at: str
+
+    @staticmethod
+    def from_document(doc: Document) -> "DocumentResponse":
+        return DocumentResponse(
+            document_id=doc.data.document_id,
+            project_id=doc.data.project_id,
+            name=doc.data.name,
+            file_type=doc.data.file_type,
+            file_size=doc.data.file_size,
+            status=doc.data.status,
+            s3_key=doc.data.s3_key,
+            use_bda=doc.data.use_bda,
+            use_ocr=doc.data.use_ocr,
+            use_transcribe=doc.data.use_transcribe,
+            ocr_model=doc.data.ocr_model,
+            ocr_options=doc.data.ocr_options,
+            document_prompt=doc.data.document_prompt,
+            language=doc.data.language,
+            transcribe_options=doc.data.transcribe_options,
+            source_url=doc.data.source_url,
+            crawl_instruction=doc.data.crawl_instruction,
+            created_at=doc.created_at,
+            updated_at=doc.updated_at,
+        )
+
+
+class DocumentStatusUpdate(BaseModel):
+    status: str
+
+
+class DeletedDocumentInfo(BaseModel):
+    document_id: str
+    workflow_id: str | None = None
+    lancedb_deleted: bool = False
+    lancedb_error: str | None = None
+    graph_delete_queued: bool = False
+    graph_error: str | None = None
+    workflow_deleted: bool = False
+
+
+class DeleteDocumentResponse(BaseModel):
+    message: str
+    details: DeletedDocumentInfo
+
+
+class StepProgress(BaseModel):
+    status: str
+    label: str
+    error: str | None = None
+    reason: str | None = None
+    qa_regen: dict | None = None
+
+
+class DocumentProgress(BaseModel):
+    document_id: str
+    workflow_id: str
+    status: str
+    current_step: str
+    steps: dict[str, StepProgress]
+
+
+# Non-terminal workflow states that should be returned when active_only=true.
+# A completed/failed/needs_user_fix document is terminal and, once cleared from
+# the UI, must not be re-surfaced by a routine progress poll triggered by an
+# unrelated new upload.
+_ACTIVE_WF_STATUSES = frozenset({"pending", "in_progress", "processing", "reanalyzing"})
+
+
+@router.get("/progress")
+def get_documents_progress(
+    project_id: str,
+    active_only: bool = Query(
+        default=False,
+        description="When true, return only documents with a non-terminal (in-progress) workflow.",
+    ),
+) -> list[DocumentProgress]:
+    """Get workflow step progress for documents.
+
+    By default returns all documents (including terminal ones) for a full
+    reconcile. With active_only=true, returns only in-progress/reanalyzing
+    workflows - used by routine polling so a new upload's progress fetch does
+    not re-surface unrelated terminal documents.
+    """
+    documents = query_documents(project_id)
+    active_docs = [doc for doc in documents if doc.data.status != "deleted"]
+
+    if not active_docs:
+        return []
+
+    # Collect workflow_ids for each document
+    doc_workflow_map: dict[str, tuple[str, str]] = {}  # workflow_id -> (document_id, wf_status)
+    for doc in active_docs:
+        workflows = query_workflows(doc.data.document_id)
+        if workflows:
+            wf = workflows[0]
+            wf_id = wf.SK.replace("WF#", "")
+            if active_only and wf.data.status not in _ACTIVE_WF_STATUSES:
+                continue
+            doc_workflow_map[wf_id] = (doc.data.document_id, wf.data.status)
+
+    if not doc_workflow_map:
+        return []
+
+    # Batch-get all STEP records
+    steps_by_wf = get_steps_batch(list(doc_workflow_map.keys()))
+
+    results: list[DocumentProgress] = []
+    for wf_id, (document_id, wf_status) in doc_workflow_map.items():
+        steps_data = steps_by_wf.get(wf_id, {})
+        current_step = steps_data.get("current_step", "")
+
+        steps: dict[str, StepProgress] = {}
+        for key, value in steps_data.items():
+            if isinstance(value, dict) and "status" in value and "label" in value:
+                step = StepProgress(status=value["status"], label=value["label"])
+                if "error" in value:
+                    step.error = value["error"]
+                if "reason" in value:
+                    step.reason = value["reason"]
+                if "qa_regen" in value:
+                    step.qa_regen = value["qa_regen"]
+                steps[key] = step
+
+        results.append(
+            DocumentProgress(
+                document_id=document_id,
+                workflow_id=wf_id,
+                status=wf_status,
+                current_step=current_step,
+                steps=steps,
+            )
+        )
+
+    return results
+
+
+@router.get(
+    "/download-url",
+    responses={
+        400: {"description": "The key is not a plain S3 key (e.g. a '..' segment)"},
+        403: {"description": "The key is outside this project"},
+        404: {"description": "Project not found"},
+    },
+)
+def get_document_download_url(
+    project_id: ProjectId,
+    user_id: UserId,
+    key: str = Query(description="S3 key in the document bucket, under projects/{project_id}/"),
+) -> PresignedUrlResponse:
+    """Presigned GET (5 minutes) for one object of this project in the document bucket.
+
+    The bucket is always the document bucket; the key must be a plain key under
+    ``projects/{project_id}/`` (a document, its segment images or analysis).
+    """
+    try:
+        check_key(key, project_prefix(project_id))
+    except PresignError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail) from None
+
+    if not get_project_item(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    bucket = get_config().document_storage_bucket_name
+    if not bucket:
+        raise HTTPException(status_code=503, detail="Document storage is not configured")
+
+    print(f"presign get document project={project_id} user={user_id}")
+    return PresignedUrlResponse(url=presign_get(bucket, key), expires_in=PRESIGNED_URL_EXPIRES_IN)
+
+
+@router.get("")
+def list_documents(project_id: str) -> list[DocumentResponse]:
+    """List all documents for a project."""
+    documents = query_documents(project_id)
+    return [DocumentResponse.from_document(doc) for doc in documents]
+
+
+@router.post("")
+def create_document_upload(
+    project_id: ProjectId, request: DocumentUploadRequest, user_id: OptionalUserId = None
+) -> DocumentUploadResponse:
+    """Create a document record and return a presigned PUT URL for its upload.
+
+    The URL is valid for 5 minutes and only for this document's key, the
+    declared content type and the declared size (both are signed headers).
+    The upload's S3 ObjectCreated event starts the pipeline as before.
+    """
+    config = get_config()
+
+    # File name, type (the pipeline's supported extensions) and size (1 byte to 500MB)
+    try:
+        ext = check_upload(request.file_name, request.content_type, request.file_size)
+    except PresignError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail) from None
+
+    # Check project exists
+    if not get_project_item(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if not config.document_storage_bucket_name:
+        raise HTTPException(status_code=503, detail="Document storage is not configured")
+
+    # Generate document ID and S3 key
+    document_id = str(uuid.uuid4())
+    # Use document_id as filename for S3 (original name stored in DynamoDB)
+    s3_key = f"projects/{project_id}/documents/{document_id}/{document_id}.{ext}"
+
+    # Create document record in DynamoDB
+    data = DocumentData(
+        document_id=document_id,
+        project_id=project_id,
+        name=request.file_name,
+        file_type=request.content_type,
+        file_size=request.file_size,
+        status="uploading",
+        s3_key=s3_key,
+        use_bda=request.use_bda,
+        use_ocr=request.use_ocr,
+        use_transcribe=request.use_transcribe,
+        ocr_model=request.ocr_model,
+        ocr_options=request.ocr_options,
+        document_prompt=request.document_prompt,
+        language=request.language,
+        transcribe_options=request.transcribe_options,
+        source_url=request.source_url,
+        crawl_instruction=request.crawl_instruction,
+    )
+    put_document_item(project_id, document_id, data)
+
+    # Presigned PUT for exactly this key, content type and size (5 minutes)
+    upload_url = presign_put(
+        config.document_storage_bucket_name,
+        s3_key,
+        content_type=request.content_type,
+        content_length=request.file_size,
+    )
+    print(f"presign put document project={project_id} document={document_id} user={user_id or '-'}")
+
+    return DocumentUploadResponse(
+        document_id=document_id,
+        upload_url=upload_url,
+        file_name=request.file_name,
+        expires_in=PRESIGNED_URL_EXPIRES_IN,
+    )
+
+
+@router.put("/{document_id}/status")
+def update_document_status(project_id: str, document_id: str, request: DocumentStatusUpdate) -> DocumentResponse:
+    """Update document status after upload completion."""
+    existing = get_document_item(project_id, document_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    data = existing.data.model_copy()
+    data.status = request.status
+
+    update_document_data(project_id, document_id, data)
+
+    # Update project's updated_at for sorting by recent activity
+    mark_project_updated(project_id)
+
+    # Get updated document
+    doc = get_document_item(project_id, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return DocumentResponse.from_document(doc)
+
+
+@router.get("/{document_id}")
+def get_document(project_id: str, document_id: str) -> DocumentResponse:
+    """Get a single document."""
+    doc = get_document_item(project_id, document_id)
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return DocumentResponse.from_document(doc)
+
+
+@router.delete("/{document_id}")
+def delete_document(project_id: str, document_id: str) -> DeleteDocumentResponse:
+    """Delete a document and all related data (DynamoDB, S3, LanceDB)."""
+    config = get_config()
+    s3 = get_s3_client()
+
+    # Check document exists and get info
+    doc = get_document_item(project_id, document_id)
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    s3_key = doc.data.s3_key
+
+    # Find related workflow for this document
+    workflow_id = None
+    workflows = query_workflows(document_id)
+    if workflows:
+        wf = workflows[0]
+        workflow_id = wf.SK.replace("WF#", "")
+
+    deleted_info = DeletedDocumentInfo(document_id=document_id, workflow_id=workflow_id)
+
+    # 1. Delete from LanceDB via Lambda
+    if workflow_id and config.lancedb_function_name:
+        try:
+            lancedb_delete_by_workflow(DeleteByWorkflowInput(project_id=project_id, workflow_id=workflow_id))
+            deleted_info.lancedb_deleted = True
+        except LanceDbError as e:
+            deleted_info.lancedb_error = str(e)
+
+    # 1b. Queue graph deletion via SQS (async, handles large documents).
+    # Start at "clusters" (PHASE_ORDER[0] in graph-delete-consumer) so Cluster
+    # nodes are removed too.
+    if workflow_id and config.graph_delete_queue_url:
+        try:
+            import json
+
+            import boto3
+
+            sqs_client = boto3.client("sqs", region_name=config.aws_region)
+            sqs_client.send_message(
+                QueueUrl=config.graph_delete_queue_url,
+                MessageBody=json.dumps(
+                    {
+                        "project_id": project_id,
+                        "workflow_id": workflow_id,
+                        "phase": "clusters",
+                        "batch_size": 500,
+                    }
+                ),
+            )
+            deleted_info.graph_delete_queued = True
+        except Exception as e:
+            deleted_info.graph_error = str(e)
+
+    # 2. Delete from S3 - document file
+    if s3_key:
+        with contextlib.suppress(Exception):
+            s3.delete_object(Bucket=config.document_storage_bucket_name, Key=s3_key)
+
+    # 3. Delete from S3 - entire document folder
+    doc_prefix = f"projects/{project_id}/documents/{document_id}/"
+    with contextlib.suppress(Exception):
+        delete_s3_prefix(config.document_storage_bucket_name, doc_prefix)
+
+    # 4. Delete workflow data from DynamoDB
+    if workflow_id:
+        with contextlib.suppress(Exception):
+            delete_workflow_item(document_id, workflow_id)
+            deleted_info.workflow_deleted = True
+
+    # 5. Delete document item from DynamoDB
+    delete_document_item(project_id, document_id)
+
+    # 6. Delete extracted document facts (PROJ#/FACTS#)
+    with contextlib.suppress(Exception):
+        delete_facts_item(project_id, document_id)
+
+    return DeleteDocumentResponse(message=f"Document {document_id} deleted", details=deleted_info)

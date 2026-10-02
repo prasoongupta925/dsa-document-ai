@@ -1,0 +1,103 @@
+{
+  "name": "idp_v2.backend",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "packages/backend/app",
+  "release": {
+    "version": {
+      "versionActions": "@nxlv/python/src/release/version-actions"
+    }
+  },
+  "tags": [],
+  "targets": {
+    "add": {
+      "executor": "@nxlv/python:add",
+      "options": {}
+    },
+    "build": {
+      "dependsOn": ["lint", "compile", "test"],
+      "options": {
+        "outputPath": "{workspaceRoot}/dist/packages/backend"
+      }
+    },
+    "compile": {
+      "executor": "@nxlv/python:build",
+      "outputs": ["{workspaceRoot}/dist/packages/backend/build"],
+      "options": {
+        "outputPath": "{workspaceRoot}/dist/packages/backend/build",
+        "publish": false,
+        "lockedVersions": true,
+        "bundleLocalDependencies": true
+      },
+      "cache": true
+    },
+    "format": {
+      "executor": "@nxlv/python:ruff-format",
+      "outputs": [],
+      "options": {
+        "filePatterns": ["app", "tests"]
+      },
+      "cache": true
+    },
+    "install": {
+      "executor": "@nxlv/python:install",
+      "options": {
+        "silent": false,
+        "args": "",
+        "verbose": false,
+        "debug": false
+      }
+    },
+    "lint": {
+      "executor": "@nxlv/python:ruff-check",
+      "outputs": [],
+      "options": {
+        "lintFilePatterns": ["app", "tests"]
+      },
+      "cache": true,
+      "dependsOn": ["format"]
+    },
+    "lock": {
+      "executor": "@nxlv/python:lock",
+      "options": {
+        "update": false
+      }
+    },
+    "remove": {
+      "executor": "@nxlv/python:remove",
+      "options": {}
+    },
+    "sync": {
+      "executor": "@nxlv/python:sync",
+      "options": {}
+    },
+    "test": {
+      "executor": "@nxlv/python:run-commands",
+      "outputs": [
+        "{workspaceRoot}/reports/{projectRoot}/unittests",
+        "{workspaceRoot}/coverage/{projectRoot}"
+      ],
+      "options": {
+        "command": "uv run pytest tests/",
+        "cwd": "{projectRoot}"
+      },
+      "cache": true
+    },
+    "update": {
+      "executor": "@nxlv/python:update",
+      "options": {}
+    },
+    "openapi": {
+      "executor": "@nxlv/python:run-commands",
+      "outputs": ["{workspaceRoot}/dist/packages/backend/openapi"],
+      "options": {
+        "command": "uv run python scripts/export_openapi.py",
+        "cwd": "{projectRoot}"
+      },
+      "cache": true
+    }
+  },
+  "metadata": {
+    "generator": "py#project"
+  }
+}

@@ -1,0 +1,297 @@
+{
+  "sample": true,
+  "label": "sample policy — replace with your lender grid",
+  "version": "2026-10-02-sample",
+  "note": "SAMPLE lender policies for a demo, not any lender's real grid: replace with your lender grid before real use. Every value (ROI, FOIR, multiplier, tenure, amounts, CIBIL and enquiry limits, employment types, company categories, income consideration) is sample data. Set 'sample' to false only for a real grid. roi is the annual rate in percent; foir is a fraction of the monthly income; multiplier multiplies the monthly income; amounts are rupees; income_consideration_pct is the percent of each other income a lender counts; calculation_tenure_months is the tenure the per-lakh EMI and the FOIR eligibility are calculated at (the sheet's Tenure Calculation; a shorter requested tenure is used instead), while the EMI is shown at max_tenure_months; foir_grid (optional) gives a listed company's FOIR by net monthly salary slab (the row of the largest slab_starts value at or below the net salary; below the first one is below the lender's minimum income) and company category (one FOIR per slab), instead of the category's own foir.",
+  "lenders": [
+    {
+      "id": "hdfc_bank",
+      "name": "HDFC Bank",
+      "product": "Personal loan, salaried",
+      "roi": 12.0,
+      "foir": 0.7,
+      "multiplier": 20,
+      "min_tenure_months": 12,
+      "max_tenure_months": 60,
+      "calculation_tenure_months": 60,
+      "min_amount": 50000,
+      "max_amount": 1500000,
+      "min_cibil_score": 750,
+      "max_enquiries_90d": 4,
+      "employment_types": [
+        "government",
+        "defence",
+        "public_limited",
+        "private_limited",
+        "llp"
+      ],
+      "company_categories": {
+        "Super CAT A": {
+          "foir": 0.6,
+          "multiplier": 22
+        },
+        "CAT A": {
+          "foir": 0.6,
+          "multiplier": 20
+        },
+        "CAT B": {
+          "foir": 0.55,
+          "multiplier": 16
+        },
+        "CAT C": {
+          "foir": 0.5,
+          "multiplier": 12
+        },
+        "CAT D": {
+          "foir": 0.45,
+          "multiplier": 10
+        }
+      },
+      "foir_grid": {
+        "label": "SAMPLE: confirm with Varunika Loan Partners' HDFC grid",
+        "slab_starts": [
+          35000,
+          50000,
+          75000,
+          100000
+        ],
+        "categories": {
+          "Super CAT A": [
+            0.6,
+            0.65,
+            0.7,
+            0.75
+          ],
+          "CAT A": [
+            0.6,
+            0.65,
+            0.7,
+            0.75
+          ],
+          "CAT B": [
+            0.55,
+            0.55,
+            0.55,
+            0.55
+          ],
+          "CAT C": [
+            0.5,
+            0.5,
+            0.5,
+            0.5
+          ],
+          "CAT D": [
+            0.45,
+            0.45,
+            0.45,
+            0.45
+          ]
+        }
+      },
+      "unlisted_company": {
+        "accepted": false
+      },
+      "income_consideration_pct": {
+        "rented_notary": 0,
+        "rented_registered": 50,
+        "bonus": 50,
+        "incentive": 50,
+        "pension": 100
+      }
+    },
+    {
+      "id": "icici_bank",
+      "name": "ICICI Bank",
+      "product": "Personal loan, salaried",
+      "roi": 11.0,
+      "foir": 0.7,
+      "multiplier": 21,
+      "min_tenure_months": 12,
+      "max_tenure_months": 72,
+      "calculation_tenure_months": 60,
+      "min_amount": 50000,
+      "max_amount": 4000000,
+      "min_cibil_score": 725,
+      "max_enquiries_90d": 5,
+      "employment_types": [
+        "government",
+        "defence",
+        "public_limited",
+        "private_limited",
+        "llp",
+        "partnership_proprietorship"
+      ],
+      "company_categories": {
+        "CAT A": {
+          "foir": 0.7,
+          "multiplier": 21
+        },
+        "CAT B": {
+          "foir": 0.65,
+          "multiplier": 18
+        },
+        "CAT C": {
+          "foir": 0.55,
+          "multiplier": 14
+        }
+      },
+      "unlisted_company": {
+        "accepted": true,
+        "foir": 0.5,
+        "multiplier": 10
+      },
+      "income_consideration_pct": {
+        "rented_notary": 25,
+        "rented_registered": 60,
+        "bonus": 50,
+        "incentive": 60,
+        "pension": 80
+      }
+    },
+    {
+      "id": "axis_bank",
+      "name": "Axis Bank",
+      "product": "Personal loan, salaried",
+      "roi": 11.5,
+      "foir": 0.65,
+      "multiplier": 18,
+      "min_tenure_months": 12,
+      "max_tenure_months": 60,
+      "calculation_tenure_months": 60,
+      "min_amount": 50000,
+      "max_amount": 2500000,
+      "min_cibil_score": 750,
+      "max_enquiries_90d": 3,
+      "employment_types": [
+        "government",
+        "public_limited",
+        "private_limited",
+        "llp"
+      ],
+      "company_categories": {
+        "CAT A": {
+          "foir": 0.65,
+          "multiplier": 18
+        },
+        "CAT B": {
+          "foir": 0.6,
+          "multiplier": 15
+        },
+        "CAT C": {
+          "foir": 0.5,
+          "multiplier": 12
+        }
+      },
+      "unlisted_company": {
+        "accepted": false
+      },
+      "income_consideration_pct": {
+        "rented_notary": 0,
+        "rented_registered": 50,
+        "bonus": 40,
+        "incentive": 40,
+        "pension": 100
+      }
+    },
+    {
+      "id": "bajaj_finance",
+      "name": "Bajaj Finance",
+      "product": "Personal loan, salaried",
+      "roi": 14.0,
+      "foir": 0.75,
+      "multiplier": 22,
+      "min_tenure_months": 12,
+      "max_tenure_months": 84,
+      "calculation_tenure_months": 72,
+      "min_amount": 100000,
+      "max_amount": 3500000,
+      "min_cibil_score": 700,
+      "max_enquiries_90d": 6,
+      "employment_types": [
+        "government",
+        "defence",
+        "public_limited",
+        "private_limited",
+        "llp",
+        "partnership_proprietorship",
+        "merchant_navy"
+      ],
+      "company_categories": {
+        "Super Prime": {
+          "foir": 0.75,
+          "multiplier": 24
+        },
+        "Prime": {
+          "foir": 0.7,
+          "multiplier": 20
+        },
+        "Standard": {
+          "foir": 0.6,
+          "multiplier": 16
+        }
+      },
+      "unlisted_company": {
+        "accepted": true,
+        "foir": 0.55,
+        "multiplier": 12
+      },
+      "income_consideration_pct": {
+        "rented_notary": 50,
+        "rented_registered": 75,
+        "bonus": 50,
+        "incentive": 50,
+        "pension": 100
+      }
+    },
+    {
+      "id": "tata_capital",
+      "name": "Tata Capital",
+      "product": "Personal loan, salaried",
+      "roi": 12.5,
+      "foir": 0.7,
+      "multiplier": 20,
+      "min_tenure_months": 12,
+      "max_tenure_months": 72,
+      "calculation_tenure_months": 60,
+      "min_amount": 75000,
+      "max_amount": 3000000,
+      "min_cibil_score": 725,
+      "max_enquiries_90d": 4,
+      "employment_types": [
+        "government",
+        "defence",
+        "grade_4",
+        "public_limited",
+        "private_limited",
+        "llp",
+        "partnership_proprietorship"
+      ],
+      "company_categories": {
+        "CAT 1": {
+          "foir": 0.7,
+          "multiplier": 20
+        },
+        "CAT 2": {
+          "foir": 0.65,
+          "multiplier": 17
+        },
+        "CAT 3": {
+          "foir": 0.55,
+          "multiplier": 13
+        }
+      },
+      "unlisted_company": {
+        "accepted": true,
+        "foir": 0.5,
+        "multiplier": 10
+      },
+      "income_consideration_pct": {
+        "rented_notary": 25,
+        "rented_registered": 50,
+        "bonus": 50,
+        "incentive": 50,
+        "pension": 75
+      }
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+{
+  "sample": true,
+  "label": "sample policy — replace with your lender grid",
+  "version": "2026-09-30-sample",
+  "note": "SAMPLE serviceable pincode ranges per lender for a demo (Mumbai, Thane and Palghar region, Pune, Nashik), not any lender's real list. Replace with your lender grid. Ranges are inclusive six-digit pincodes.",
+  "regions": [
+    {
+      "id": "mumbai",
+      "name": "Mumbai (city and suburbs)",
+      "ranges": [[400001, 400104]]
+    },
+    {
+      "id": "thane",
+      "name": "Thane",
+      "ranges": [[400601, 400605]]
+    },
+    {
+      "id": "navi_mumbai",
+      "name": "Navi Mumbai",
+      "ranges": [
+        [400701, 400710],
+        [410206, 410210]
+      ]
+    },
+    {
+      "id": "kalyan_bhiwandi",
+      "name": "Kalyan, Dombivli, Bhiwandi, Ulhasnagar",
+      "ranges": [[421001, 421605]]
+    },
+    {
+      "id": "mira_bhayandar",
+      "name": "Mira-Bhayandar",
+      "ranges": [[401101, 401107]]
+    },
+    {
+      "id": "thane_ghodbunder",
+      "name": "Thane (Ghodbunder Road)",
+      "ranges": [[400606, 400615]]
+    },
+    {
+      "id": "palghar",
+      "name": "Palghar, Boisar, Dahanu",
+      "ranges": [[401401, 401610]]
+    },
+    {
+      "id": "pune",
+      "name": "Pune and Pimpri-Chinchwad",
+      "ranges": [[411001, 411062]]
+    },
+    {
+      "id": "nashik",
+      "name": "Nashik",
+      "ranges": [[422001, 422013]]
+    }
+  ],
+  "lenders": {
+    "hdfc_bank": [
+      "mumbai",
+      "thane",
+      "navi_mumbai",
+      "kalyan_bhiwandi",
+      "mira_bhayandar",
+      "thane_ghodbunder",
+      "palghar",
+      "pune"
+    ],
+    "icici_bank": [
+      "mumbai",
+      "thane",
+      "navi_mumbai",
+      "kalyan_bhiwandi",
+      "mira_bhayandar",
+      "thane_ghodbunder",
+      "palghar",
+      "pune",
+      "nashik"
+    ],
+    "axis_bank": ["mumbai", "thane", "navi_mumbai", "mira_bhayandar", "pune"],
+    "bajaj_finance": [
+      "mumbai",
+      "thane",
+      "navi_mumbai",
+      "kalyan_bhiwandi",
+      "mira_bhayandar",
+      "thane_ghodbunder",
+      "palghar",
+      "pune",
+      "nashik"
+    ],
+    "tata_capital": [
+      "mumbai",
+      "thane",
+      "navi_mumbai",
+      "mira_bhayandar",
+      "thane_ghodbunder",
+      "palghar"
+    ]
+  }
+}

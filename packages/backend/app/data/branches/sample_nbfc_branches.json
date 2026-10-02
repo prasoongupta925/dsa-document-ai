@@ -1,0 +1,90 @@
+{
+  "sample": true,
+  "label": "SAMPLE branch, made up for the demo: not a real address",
+  "version": "2026-10-02-sample",
+  "note": "Bajaj Finance and Tata Capital publish no open branch list, so these rows are SAMPLE data made up for the demo pincodes (Thane, Ghodbunder Road, Mumbai, Pune, and the demo applicants' Baner, Kothrud and Chinchwad): each name ends in (sample) and no address is real. Upload the DSA's own lender_branches list to replace them. Pincodes, cities and districts are real so that distances can be shown.",
+  "lenders": {
+    "bajaj_finance": {
+      "name": "Bajaj Finance",
+      "branches": [
+        {
+          "name": "Pokhran Road (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Thane",
+          "pincode": "400606"
+        },
+        {
+          "name": "Ghodbunder Road (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Kasarvadavali",
+          "pincode": "400615"
+        },
+        {
+          "name": "Thane West (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Thane",
+          "pincode": "400601"
+        },
+        {
+          "name": "Andheri (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Mumbai",
+          "pincode": "400053"
+        },
+        {
+          "name": "Pune Viman Nagar (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Pune",
+          "pincode": "411014"
+        },
+        {
+          "name": "Baner (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Pune",
+          "pincode": "411045"
+        },
+        {
+          "name": "Chinchwad (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Pimpri-Chinchwad",
+          "pincode": "411033"
+        }
+      ]
+    },
+    "tata_capital": {
+      "name": "Tata Capital",
+      "branches": [
+        {
+          "name": "Thane East (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Thane",
+          "pincode": "400603"
+        },
+        {
+          "name": "Thane (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Thane",
+          "pincode": "400601"
+        },
+        {
+          "name": "Mumbai Fort (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Mumbai",
+          "pincode": "400001"
+        },
+        {
+          "name": "Pune Camp (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Pune",
+          "pincode": "411001"
+        },
+        {
+          "name": "Kothrud (sample)",
+          "address": "SAMPLE address for the demo, not a real branch",
+          "city": "Pune",
+          "pincode": "411038"
+        }
+      ]
+    }
+  }
+}

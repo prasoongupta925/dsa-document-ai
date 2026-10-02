@@ -1,0 +1,12 @@
+# The image only needs pyproject.toml, README.md and app/ (see Dockerfile).
+# Keeping caches, local env files and tests out of the build context also
+# keeps the CDK image asset hash stable.
+**/__pycache__
+**/*.pyc
+.venv
+.env*
+.pytest_cache
+.ruff_cache
+.coverage
+tests
+scripts
