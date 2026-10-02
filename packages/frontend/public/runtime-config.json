@@ -1,0 +1,16 @@
+{
+  "documentStorageBucketName": "idp-v2-document-storage-975050239358",
+  "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:975050239358:runtime/idp_agent-7pZhOm508r",
+  "researchAgentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:975050239358:runtime/research_agent-4k6kZ5GWHd",
+  "bidiAgentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:975050239358:runtime/bidi_agent-Kd3U4gC2K0",
+  "websocketUrl": "wss://mr6cxqidfd.execute-api.us-east-1.amazonaws.com/prod",
+  "cognitoProps": {
+    "region": "us-east-1",
+    "identityPoolId": "us-east-1:2c978243-44b7-46aa-893c-c2dc08630f5f",
+    "userPoolId": "us-east-1_5ONWYOkFW",
+    "userPoolWebClientId": "4gp0ttatl3plgcmj2gl0kerkru"
+  },
+  "apis": {
+    "Backend": "https://o8syvab0ej.execute-api.us-east-1.amazonaws.com/"
+  }
+}

@@ -1,0 +1,325 @@
+import type { LucideIcon } from 'lucide-react';
+import {
+  FileText,
+  Image,
+  Film,
+  FileCode,
+  FileSpreadsheet,
+  File,
+  Music,
+  Globe,
+  Presentation,
+  Ruler,
+} from 'lucide-react';
+
+// --- MIME type constants ---
+
+export const TEXT_MIME_TYPES = [
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'text/tab-separated-values',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/msword',
+];
+
+// --- Boolean type checks ---
+
+export const isTextFileType = (fileType: string | undefined): boolean => {
+  if (!fileType) return false;
+  return TEXT_MIME_TYPES.includes(fileType);
+};
+
+export const isMarkdownFileType = (fileType: string | undefined): boolean => {
+  return fileType === 'text/markdown';
+};
+
+export const isSpreadsheetFileType = (
+  fileType: string | undefined,
+): boolean => {
+  if (!fileType) return false;
+  return [
+    'text/csv',
+    'text/tab-separated-values',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+  ].includes(fileType);
+};
+
+export const isExcelFileType = (fileType: string | undefined): boolean => {
+  if (!fileType) return false;
+  return [
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+  ].includes(fileType);
+};
+
+export const isPdfFileType = (fileType: string | undefined): boolean => {
+  return fileType === 'application/pdf';
+};
+
+export const isImageFileType = (fileType: string | undefined): boolean => {
+  if (!fileType) return false;
+  return fileType.startsWith('image/');
+};
+
+export const isDocxFileType = (fileType: string | undefined): boolean => {
+  if (!fileType) return false;
+  return (
+    fileType ===
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    fileType === 'application/msword'
+  );
+};
+
+export const isPptxFileType = (fileType: string | undefined): boolean => {
+  if (!fileType) return false;
+  return (
+    fileType ===
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+    fileType === 'application/vnd.ms-powerpoint'
+  );
+};
+
+export const DXF_MIME_TYPES = ['application/dxf', 'image/vnd.dxf'];
+
+export const isDxfFileType = (fileType: string | undefined): boolean => {
+  if (!fileType) return false;
+  return DXF_MIME_TYPES.includes(fileType);
+};
+
+// --- Labels ---
+
+export const FILE_TYPE_LABELS: Record<string, string> = {
+  'application/pdf': 'PDF',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'XLSX',
+  'application/vnd.ms-excel': 'XLS',
+  'text/csv': 'CSV',
+  'text/tab-separated-values': 'TSV',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    'DOCX',
+  'application/msword': 'DOC',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+    'PPTX',
+  'application/vnd.ms-powerpoint': 'PPT',
+  'text/plain': 'TXT',
+  'text/markdown': 'Markdown',
+  'image/png': 'PNG',
+  'image/jpeg': 'JPEG',
+  'image/tiff': 'TIFF',
+  'video/mp4': 'MP4',
+  'audio/mpeg': 'MP3',
+  'application/x-webreq': 'Web',
+  'application/dxf': 'DXF',
+  'image/vnd.dxf': 'DXF',
+};
+
+export const getFileTypeLabel = (fileType: string | undefined): string => {
+  if (!fileType) return 'PDF';
+  return FILE_TYPE_LABELS[fileType] || fileType;
+};
+
+// --- Category (for document filtering) ---
+
+export const getFileTypeCategory = (fileType: string): string => {
+  if (isDxfFileType(fileType)) return 'cad';
+  if (fileType.includes('pdf')) return 'pdf';
+  if (fileType.startsWith('image/')) return 'image';
+  if (fileType.startsWith('video/') || fileType.startsWith('audio/'))
+    return 'media';
+  if (fileType.includes('webreq')) return 'web';
+  if (
+    fileType.includes('spreadsheetml') ||
+    fileType.includes('ms-excel') ||
+    fileType === 'text/csv' ||
+    fileType === 'text/tab-separated-values'
+  )
+    return 'spreadsheet';
+  if (fileType.includes('presentationml') || fileType.includes('ms-powerpoint'))
+    return 'presentation';
+  if (fileType.includes('wordprocessing') || fileType.includes('msword'))
+    return 'document';
+  return 'text';
+};
+
+// --- Icon components (returns LucideIcon class, not JSX) ---
+
+export function getArtifactIcon(contentType: string): LucideIcon {
+  if (isDxfFileType(contentType)) return Ruler;
+  if (contentType.startsWith('image/')) return Image;
+  if (contentType.startsWith('video/')) return Film;
+  if (contentType === 'application/pdf') return FileText;
+  if (isDocxFileType(contentType)) return FileText;
+  if (isPptxFileType(contentType)) return Presentation;
+  if (isSpreadsheetFileType(contentType)) return FileSpreadsheet;
+  if (
+    contentType.startsWith('text/') ||
+    contentType === 'application/json' ||
+    contentType === 'application/javascript'
+  )
+    return FileCode;
+  return File;
+}
+
+export function getArtifactIconClass(contentType: string): string {
+  if (isDxfFileType(contentType)) return 'bg-teal-500';
+  if (contentType.startsWith('image/')) return 'bg-purple-500';
+  if (contentType.startsWith('video/')) return 'bg-pink-500';
+  if (contentType === 'application/pdf') return 'bg-red-500';
+  if (isDocxFileType(contentType)) return 'bg-indigo-500';
+  if (isPptxFileType(contentType)) return 'bg-orange-500';
+  if (isSpreadsheetFileType(contentType)) return 'bg-green-500';
+  if (
+    contentType.startsWith('text/') ||
+    contentType === 'application/json' ||
+    contentType === 'application/javascript'
+  )
+    return 'bg-blue-500';
+  return 'bg-slate-500';
+}
+
+// --- File icon for SidePanel (returns { icon, className }) ---
+
+export function getFileIconComponent(fileType: string): {
+  icon: LucideIcon;
+  className: string;
+} {
+  if (isDxfFileType(fileType))
+    return { icon: Ruler, className: 'h-5 w-5 text-teal-400' };
+  if (fileType.includes('pdf'))
+    return { icon: FileText, className: 'h-5 w-5 text-blue-400' };
+  if (fileType.includes('image'))
+    return { icon: Image, className: 'h-5 w-5 text-emerald-400' };
+  if (fileType.includes('video'))
+    return { icon: Film, className: 'h-5 w-5 text-violet-400' };
+  if (fileType.includes('audio'))
+    return { icon: Music, className: 'h-5 w-5 text-amber-400' };
+  if (fileType.includes('webreq'))
+    return { icon: Globe, className: 'h-5 w-5 text-cyan-400' };
+  if (fileType.includes('presentationml') || fileType.includes('ms-powerpoint'))
+    return { icon: Presentation, className: 'h-5 w-5 text-orange-400' };
+  if (
+    fileType.includes('spreadsheetml') ||
+    fileType.includes('ms-excel') ||
+    fileType === 'text/csv' ||
+    fileType === 'text/tab-separated-values'
+  )
+    return { icon: FileSpreadsheet, className: 'h-5 w-5 text-green-400' };
+  if (fileType === 'text/markdown')
+    return { icon: FileCode, className: 'h-5 w-5 text-indigo-400' };
+  if (fileType.includes('wordprocessing') || fileType.includes('msword'))
+    return { icon: FileText, className: 'h-5 w-5 text-blue-500' };
+  if (fileType === 'text/plain')
+    return { icon: FileText, className: 'h-5 w-5 text-slate-500' };
+  return { icon: File, className: 'h-5 w-5 text-slate-400' };
+}
+
+// --- Extension-based file type info (for ChatPanel) ---
+
+export const getFileTypeInfo = (
+  filename: string,
+): { icon: LucideIcon; color: string; bgColor: string } => {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  switch (ext) {
+    case 'pdf':
+      return {
+        icon: FileText,
+        color: 'text-red-500',
+        bgColor: 'bg-red-100 dark:bg-red-900/30',
+      };
+    case 'doc':
+    case 'docx':
+      return {
+        icon: FileText,
+        color: 'text-blue-500',
+        bgColor: 'bg-blue-100 dark:bg-blue-900/30',
+      };
+    case 'xls':
+    case 'xlsx':
+    case 'csv':
+    case 'tsv':
+      return {
+        icon: FileSpreadsheet,
+        color: 'text-green-500',
+        bgColor: 'bg-green-100 dark:bg-green-900/30',
+      };
+    case 'html':
+    case 'md':
+      return {
+        icon: FileCode,
+        color: 'text-purple-500',
+        bgColor: 'bg-purple-100 dark:bg-purple-900/30',
+      };
+    case 'txt':
+      return {
+        icon: File,
+        color: 'text-slate-500',
+        bgColor: 'bg-slate-100 dark:bg-slate-600',
+      };
+    case 'dxf':
+      return {
+        icon: Ruler,
+        color: 'text-teal-500',
+        bgColor: 'bg-teal-100 dark:bg-teal-900/30',
+      };
+    default:
+      return {
+        icon: File,
+        color: 'text-slate-500',
+        bgColor: 'bg-slate-100 dark:bg-slate-600',
+      };
+  }
+};
+
+// --- MIME type to extension mapping ---
+
+const MIME_TO_EXTENSION: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    'docx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+    'pptx',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-excel': 'xls',
+  'text/csv': 'csv',
+  'text/tab-separated-values': 'tsv',
+  'text/plain': 'txt',
+  'text/markdown': 'md',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/tiff': 'tiff',
+  'image/vnd.dxf': 'dxf',
+  'application/dxf': 'dxf',
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+  'audio/flac': 'flac',
+  'application/x-webreq': 'webreq',
+};
+
+export function getExtensionFromMimeType(
+  fileType: string,
+  fileName?: string,
+): string {
+  if (fileName) {
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    if (ext) return ext;
+  }
+  return MIME_TO_EXTENSION[fileType] || '';
+}
+
+// --- Shared formatFileSize ---
+
+export function formatFileSize(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}

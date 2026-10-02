@@ -1,0 +1,497 @@
+import { useAuth } from 'react-oidc-context';
+import * as React from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+
+import Config from '../../config';
+import { Link, useLocation, useNavigate } from '@tanstack/react-router';
+import SidebarSessionList from './SidebarSessionList';
+
+// Navigation icons
+const ProjectsIcon = () => (
+  <svg
+    className="w-5 h-5"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+  </svg>
+);
+
+const ArtifactsIcon = () => (
+  <svg
+    className="w-5 h-5"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <polygon points="12 2 2 7 12 12 22 7 12 2" />
+    <polyline points="2 17 12 22 22 17" />
+    <polyline points="2 12 12 17 22 12" />
+  </svg>
+);
+
+const SettingsIcon = () => (
+  <svg
+    className="w-4 h-4"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+  </svg>
+);
+
+const LogoutIcon = () => (
+  <svg
+    className="w-4 h-4"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <polyline points="16 17 21 12 16 7" />
+    <line x1="21" y1="12" x2="9" y2="12" />
+  </svg>
+);
+
+const CollapseIcon = ({ collapsed }: { collapsed: boolean }) => (
+  <svg
+    className={`w-4 h-4 transition-transform ${collapsed ? 'rotate-180' : ''}`}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M15 18l-6-6 6-6" />
+  </svg>
+);
+
+const OpenInNewIcon = () => (
+  <svg
+    className="w-4 h-4"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    <polyline points="15 3 21 3 21 9" />
+    <line x1="10" y1="14" x2="21" y2="3" />
+  </svg>
+);
+
+const GlobeIcon = () => (
+  <svg
+    className="w-4 h-4"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <circle cx="12" cy="12" r="10" />
+    <line x1="2" y1="12" x2="22" y2="12" />
+    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+  </svg>
+);
+
+const ChevronRightIcon = () => (
+  <svg
+    className="w-3.5 h-3.5"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M9 18l6-6-6-6" />
+  </svg>
+);
+
+const SunIcon = () => (
+  <svg
+    className="w-4 h-4"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <circle cx="12" cy="12" r="5" />
+    <line x1="12" y1="1" x2="12" y2="3" />
+    <line x1="12" y1="21" x2="12" y2="23" />
+    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+    <line x1="1" y1="12" x2="3" y2="12" />
+    <line x1="21" y1="12" x2="23" y2="12" />
+    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+  </svg>
+);
+
+const MoonIcon = () => (
+  <svg
+    className="w-4 h-4"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+  </svg>
+);
+
+const ChevronUpIcon = () => (
+  <svg
+    className="w-3.5 h-3.5"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M18 15l-6-6-6 6" />
+  </svg>
+);
+
+const LANGUAGES = [
+  { code: 'ko', label: 'Korean' },
+  { code: 'en', label: 'English' },
+  { code: 'ja', label: 'Japanese' },
+];
+
+/**
+ * Defines the App layout with sidebar navigation.
+ */
+const SIDEBAR_COLLAPSED_KEY = 'idp-sidebar-collapsed';
+const THEME_KEY = 'idp-theme';
+
+const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
+  const { user, removeUser, signoutRedirect, clearStaleState } = useAuth();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const { t, i18n } = useTranslation();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+  });
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [langSubOpen, setLangSubOpen] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const stored = localStorage.getItem(THEME_KEY);
+    return stored === 'light' ? 'light' : 'dark';
+  });
+
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const toggleSidebar = () => {
+    const newValue = !sidebarCollapsed;
+    setSidebarCollapsed(newValue);
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(newValue));
+  };
+
+  // Apply theme class from localStorage
+  useEffect(() => {
+    document.documentElement.classList.remove('light', 'dark');
+    document.documentElement.classList.add(theme);
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    const newTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    localStorage.setItem(THEME_KEY, newTheme);
+  }, [theme]);
+
+  const closeMenu = useCallback(() => {
+    setUserMenuOpen(false);
+    setLangSubOpen(false);
+  }, []);
+
+  // Click outside to close
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        closeMenu();
+      }
+    };
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMenu();
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [userMenuOpen, closeMenu]);
+
+  const navItems = [
+    {
+      to: '/',
+      label: t('nav.projects'),
+      icon: <ProjectsIcon />,
+      matchPaths: ['/', '/projects'],
+    },
+    {
+      to: '/artifacts',
+      label: t('nav.artifacts'),
+      icon: <ArtifactsIcon />,
+    },
+  ];
+
+  const isNavItemActive = (item: (typeof navItems)[0]) => {
+    if (item.matchPaths) {
+      return item.matchPaths.some(
+        (path) => pathname === path || pathname.startsWith(`${path}/`),
+      );
+    }
+    return pathname === item.to || pathname.startsWith(`${item.to}/`);
+  };
+
+  const handleLogout = () => {
+    removeUser();
+    signoutRedirect({
+      post_logout_redirect_uri: window.location.origin,
+      extraQueryParams: {
+        redirect_uri: window.location.origin,
+        response_type: 'code',
+      },
+    });
+    clearStaleState();
+  };
+
+  const username = user?.profile?.['cognito:username'] as string;
+
+  return (
+    <div className="app-shell">
+      {/* Sidebar */}
+      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        {/* Logo */}
+        <div className="sidebar-header">
+          <a href="/" className="sidebar-brand">
+            <img
+              src="/logo.png"
+              alt={`${Config.applicationName} logo`}
+              className="sidebar-logo"
+            />
+            {!sidebarCollapsed && (
+              <span className="sidebar-app-name">{Config.applicationName}</span>
+            )}
+          </a>
+          <button
+            type="button"
+            className="sidebar-collapse-btn"
+            onClick={toggleSidebar}
+            title={sidebarCollapsed ? t('nav.expand') : t('nav.collapse')}
+          >
+            <CollapseIcon collapsed={sidebarCollapsed} />
+          </button>
+        </div>
+
+        {/* Navigation */}
+        <nav className="sidebar-nav">
+          {navItems.map((item) => (
+            <Link
+              key={item.to}
+              to={item.to}
+              className={`sidebar-nav-item ${isNavItemActive(item) ? 'active' : ''}`}
+              title={sidebarCollapsed ? item.label : undefined}
+            >
+              {item.icon}
+              {!sidebarCollapsed && <span>{item.label}</span>}
+            </Link>
+          ))}
+        </nav>
+
+        {/* Chat History + Disclaimer area */}
+        <div className="sidebar-sessions-area">
+          <SidebarSessionList sidebarCollapsed={sidebarCollapsed} />
+          {!sidebarCollapsed && (
+            <div className="sidebar-disclaimer">
+              {t('sidebar.aiDisclaimer')}
+            </div>
+          )}
+        </div>
+
+        {/* Bottom Section */}
+        <div className="sidebar-footer" ref={menuRef}>
+          {/* User Menu Popup */}
+          {userMenuOpen && (
+            <div className="sidebar-user-menu">
+              {/* Header */}
+              <div className="sidebar-user-menu-header">{username}</div>
+              <div className="sidebar-user-menu-separator" />
+
+              {/* Settings */}
+              <button
+                type="button"
+                className="sidebar-user-menu-item"
+                onClick={() => {
+                  navigate({ to: '/settings' });
+                  closeMenu();
+                }}
+              >
+                <SettingsIcon />
+                <span>{t('nav.settings')}</span>
+              </button>
+
+              {/* Language */}
+              <button
+                type="button"
+                className="sidebar-user-menu-item"
+                onClick={() => setLangSubOpen(!langSubOpen)}
+              >
+                <GlobeIcon />
+                <span>{t('common.language')}</span>
+                <span
+                  className={`sidebar-user-menu-chevron ${langSubOpen ? 'open' : ''}`}
+                >
+                  <ChevronRightIcon />
+                </span>
+              </button>
+              {langSubOpen && (
+                <div className="sidebar-user-menu-lang-options">
+                  {LANGUAGES.map((lang) => (
+                    <button
+                      key={lang.code}
+                      type="button"
+                      className={`sidebar-user-menu-lang-option ${i18n.language === lang.code ? 'active' : ''}`}
+                      onClick={() => {
+                        i18n.changeLanguage(lang.code);
+                        localStorage.setItem('i18nextLng', lang.code);
+                      }}
+                    >
+                      {t(`languages.${lang.code}`)}
+                      {i18n.language === lang.code && (
+                        <span className="sidebar-user-menu-lang-check">
+                          &#10003;
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Theme toggle */}
+              <button
+                type="button"
+                className="sidebar-user-menu-item"
+                onClick={toggleTheme}
+              >
+                {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+                <span>
+                  {theme === 'dark' ? t('nav.lightMode') : t('nav.darkMode')}
+                </span>
+              </button>
+
+              <div className="sidebar-user-menu-separator" />
+
+              {/* Documentation */}
+              <button
+                type="button"
+                className="sidebar-user-menu-item"
+                onClick={() => {
+                  window.open(
+                    'https://github.com/aws-samples/sample-aws-idp-pipeline/blob/main/README.md',
+                    '_blank',
+                    'noopener,noreferrer',
+                  );
+                  closeMenu();
+                }}
+              >
+                <OpenInNewIcon />
+                <span>{t('nav.documentation')}</span>
+              </button>
+
+              <div className="sidebar-user-menu-separator" />
+
+              {/* Logout */}
+              <button
+                type="button"
+                className="sidebar-user-menu-item sidebar-user-menu-item-danger"
+                onClick={handleLogout}
+              >
+                <LogoutIcon />
+                <span>{t('nav.logout')}</span>
+              </button>
+            </div>
+          )}
+
+          {/* User Info (clickable) */}
+          <div
+            className="sidebar-user"
+            onClick={() => setUserMenuOpen(!userMenuOpen)}
+          >
+            <div
+              className="sidebar-user-info"
+              title={sidebarCollapsed ? username : undefined}
+            >
+              <div className="sidebar-user-avatar">
+                {username?.charAt(0).toUpperCase()}
+              </div>
+              {!sidebarCollapsed && (
+                <div className="sidebar-user-details">
+                  <p className="sidebar-user-name">{username}</p>
+                  <p className="text-[10px] text-slate-400/60 dark:text-slate-500/60">
+                    v{__APP_VERSION__}
+                  </p>
+                </div>
+              )}
+            </div>
+            {!sidebarCollapsed && (
+              <span
+                className={`sidebar-user-chevron ${userMenuOpen ? 'open' : ''}`}
+              >
+                <ChevronUpIcon />
+              </span>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="app-main">
+        <section
+          className={`card${pathname.match(/^\/projects\/[^/]+/) ? ' card-fullbleed' : ''}`}
+        >
+          {children}
+        </section>
+        {/* Hide footer on project detail pages */}
+        {!pathname.match(/^\/projects\/[^/]+/) && (
+          <footer className="app-footer">
+            <span className="text-xs font-medium bg-gradient-to-r from-slate-400 to-slate-500 dark:from-slate-500 dark:to-slate-600 bg-clip-text text-transparent">
+              {Config.applicationName} · Demo with synthetic data
+            </span>
+          </footer>
+        )}
+      </main>
+    </div>
+  );
+};
+
+export default AppLayout;

@@ -1,0 +1,360 @@
+import { useCallback, useRef } from 'react';
+import { useAuth } from 'react-oidc-context';
+import { fromCognitoIdentityPool } from '@aws-sdk/credential-provider-cognito-identity';
+import { AwsClient } from 'aws4fetch';
+import { useRuntimeConfig } from './useRuntimeConfig';
+import {
+  requestArtifactDownloadUrl,
+  requestDocumentDownloadUrl,
+} from '../lib/presignedUrls';
+import { ApiError, errorDetailFromBody } from '../lib/apiError';
+
+const CREDENTIAL_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+
+interface Credentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+  expiration?: Date;
+}
+
+export interface StreamEvent {
+  type:
+    | 'text'
+    | 'tool_use'
+    | 'tool_result'
+    | 'complete'
+    | 'stage_start'
+    | 'stage_complete';
+  content?: string | ToolResultContent[];
+  name?: string;
+  tool_use_id?: string;
+  input?: string;
+  stage?: string;
+  result?: string;
+}
+
+export interface ToolResultContent {
+  type: string;
+  text?: string;
+  format?: string;
+  source?: string;
+  s3_url?: string | null;
+  image?: {
+    format?: string;
+    source?: { bytes?: string };
+  };
+}
+
+export interface ContentSource {
+  base64: string;
+}
+
+export interface ImageContent {
+  format: string;
+  source: ContentSource;
+}
+
+export interface DocumentContent {
+  format: string;
+  name: string;
+  source: ContentSource;
+}
+
+export interface ContentBlock {
+  image?: ImageContent;
+  document?: DocumentContent;
+  text?: string;
+}
+
+/** 스트림 파싱 (JSON 이벤트) */
+async function parseStream(
+  response: Response,
+  onEvent?: (event: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('No response body');
+
+  // Cancel the reader if the caller aborts (user pressed Stop). This closes the
+  // HTTP stream, which the agent runtime turns into a cancellation of the
+  // in-progress agent invocation.
+  const onAbort = () => {
+    reader.cancel().catch(() => undefined);
+  };
+  if (signal) {
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
+
+  const decoder = new TextDecoder();
+  let result = '';
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // JSON 객체 단위로 파싱
+      let startIdx = 0;
+      for (let i = 0; i < buffer.length; i++) {
+        if (buffer[i] === '{') {
+          let braceCount = 1;
+          let j = i + 1;
+          let inString = false;
+          let escape = false;
+          while (j < buffer.length && braceCount > 0) {
+            const ch = buffer[j];
+            if (escape) {
+              escape = false;
+            } else if (ch === '\\') {
+              escape = true;
+            } else if (ch === '"') {
+              inString = !inString;
+            } else if (!inString) {
+              if (ch === '{') braceCount++;
+              else if (ch === '}') braceCount--;
+            }
+            j++;
+          }
+          if (braceCount === 0) {
+            const jsonStr = buffer.slice(i, j);
+            try {
+              const event = JSON.parse(jsonStr) as StreamEvent;
+              onEvent?.(event);
+              if (
+                event.type === 'text' &&
+                event.content &&
+                typeof event.content === 'string'
+              ) {
+                result += event.content;
+              }
+            } catch {
+              // JSON 파싱 실패 시 무시
+            }
+            startIdx = j;
+            i = j - 1;
+          } else {
+            // 불완전한 JSON - 다음 chunk에서 완성될 때까지 버퍼에 유지
+            startIdx = i;
+            break;
+          }
+        }
+      }
+      buffer = buffer.slice(startIdx);
+    }
+  } finally {
+    if (signal) signal.removeEventListener('abort', onAbort);
+  }
+
+  return result;
+}
+
+/** ARN에서 리전 추출 */
+function extractRegionFromArn(arn: string): string {
+  return arn.split(':')[3];
+}
+
+export function useAwsClient() {
+  const { apis, cognitoProps, agentRuntimeArn, bidiAgentRuntimeArn } =
+    useRuntimeConfig();
+  const { user } = useAuth();
+  const credentialsRef = useRef<Credentials | null>(null);
+  const pendingRef = useRef<Promise<Credentials> | null>(null);
+
+  /** Cognito Identity Pool에서 AWS 자격 증명 획득 */
+  const getCredentials = useCallback(async (): Promise<Credentials> => {
+    if (!cognitoProps || !user?.id_token) {
+      throw new Error('Cognito props or user token not available');
+    }
+
+    const cached = credentialsRef.current;
+    const isValid =
+      cached?.expiration &&
+      cached.expiration.getTime() - Date.now() > CREDENTIAL_REFRESH_BUFFER_MS;
+
+    if (isValid) return cached;
+
+    if (pendingRef.current) return pendingRef.current;
+
+    pendingRef.current = fromCognitoIdentityPool({
+      clientConfig: { region: cognitoProps.region },
+      identityPoolId: cognitoProps.identityPoolId,
+      logins: {
+        [`cognito-idp.${cognitoProps.region}.amazonaws.com/${cognitoProps.userPoolId}`]:
+          user.id_token,
+      },
+    })()
+      .then((credentials) => {
+        credentialsRef.current = credentials;
+        return credentials;
+      })
+      .finally(() => {
+        pendingRef.current = null;
+      });
+
+    return pendingRef.current;
+  }, [cognitoProps, user]);
+
+  /** SigV4 서명된 AWS 클라이언트 생성 */
+  const createAwsClient = useCallback(
+    async (service: string, region?: string) => {
+      if (!cognitoProps) throw new Error('Cognito props not available');
+
+      const credentials = await getCredentials();
+      return new AwsClient({
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
+        region: region ?? cognitoProps.region,
+        service,
+      });
+    },
+    [cognitoProps, getCredentials],
+  );
+
+  /** Backend API 호출 */
+  const fetchApi = useCallback(
+    async <T>(path: string, options?: RequestInit): Promise<T> => {
+      if (!apis?.Backend) throw new Error('Backend API URL not available');
+      if (!user?.id_token) throw new Error('User token not available');
+
+      const client = await createAwsClient('execute-api');
+      const headers = new Headers(options?.headers);
+      headers.set('X-User-Id', user.profile?.['cognito:username'] as string);
+
+      const response = await client.fetch(`${apis.Backend}${path}`, {
+        ...options,
+        headers,
+      });
+
+      if (!response.ok) {
+        // Keep the backend's reason (FastAPI `detail`) for the caller to show.
+        const body = await response.text().catch(() => '');
+        throw new ApiError(response.status, errorDetailFromBody(body));
+      }
+
+      // 본문 없는 응답(예: 204 DELETE, 202 reanalyze)은 파싱하지 않고 undefined
+      // 반환. Content-Length 헤더는 신뢰할 수 없어 실제 본문을 읽어 판단한다.
+      const text = await response.text();
+      return text ? (JSON.parse(text) as T) : (undefined as T);
+    },
+    [apis, createAwsClient, user],
+  );
+
+  /** Backend API 호출 (Blob 응답 - 이미지 등 바이너리) */
+  const fetchApiBlob = useCallback(
+    async (path: string, options?: RequestInit): Promise<Blob> => {
+      if (!apis?.Backend) throw new Error('Backend API URL not available');
+      if (!user?.id_token) throw new Error('User token not available');
+
+      const client = await createAwsClient('execute-api');
+      const headers = new Headers(options?.headers);
+      headers.set('X-User-Id', user.profile?.['cognito:username'] as string);
+
+      const response = await client.fetch(`${apis.Backend}${path}`, {
+        ...options,
+        headers,
+      });
+
+      if (!response.ok) {
+        throw new ApiError(response.status);
+      }
+
+      return response.blob();
+    },
+    [apis, createAwsClient, user],
+  );
+
+  /** Bedrock Agent 호출 (스트리밍 지원) */
+  const invokeAgent = useCallback(
+    async (
+      prompt: ContentBlock[],
+      sessionId: string,
+      projectId: string,
+      onEvent?: (event: StreamEvent) => void,
+      agentId?: string,
+      runtimeArn?: string,
+      signal?: AbortSignal,
+      modelId?: string,
+      reasoning?: string,
+    ): Promise<string> => {
+      const targetArn = runtimeArn || agentRuntimeArn;
+      if (!targetArn) throw new Error('Agent runtime ARN not available');
+      if (!user?.id_token) throw new Error('User token not available');
+
+      const region = extractRegionFromArn(targetArn);
+      const client = await createAwsClient('bedrock-agentcore', region);
+
+      const response = await client.fetch(
+        `https://bedrock-agentcore.${region}.amazonaws.com/runtimes/${encodeURIComponent(targetArn)}/invocations`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId,
+          },
+          body: JSON.stringify({
+            prompt,
+            session_id: sessionId,
+            project_id: projectId,
+            user_id: user.profile?.['cognito:username'] as string,
+            agent_id: agentId,
+            ...(modelId ? { model_id: modelId } : {}),
+            ...(reasoning ? { reasoning } : {}),
+          }),
+          // Aborting closes the HTTP stream, which the agent runtime turns into
+          // a cancellation of the in-progress invocation.
+          signal,
+        },
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Agent error: ${response.status} - ${errorText}`);
+      }
+
+      const isStreaming = response.headers
+        .get('content-type')
+        ?.includes('text/event-stream');
+
+      if (isStreaming) {
+        return parseStream(response, onEvent, signal);
+      }
+
+      return JSON.stringify(await response.json());
+    },
+    [agentRuntimeArn, createAwsClient, user],
+  );
+
+  // S3 access: the Cognito identity has no S3 permissions. The backend checks
+  // each request and issues a presigned URL valid for 5 minutes (uploads get
+  // theirs from POST projects/{id}/documents, see useDocuments).
+
+  /** Presigned GET for an object of the project in the document bucket. */
+  const getDocumentDownloadUrl = useCallback(
+    (projectId: string, key: string): Promise<string> =>
+      requestDocumentDownloadUrl(fetchApi, projectId, key),
+    [fetchApi],
+  );
+
+  /** Presigned GET for one of the caller's artifacts in the agent bucket. */
+  const getArtifactDownloadUrl = useCallback(
+    (key: string): Promise<string> => requestArtifactDownloadUrl(fetchApi, key),
+    [fetchApi],
+  );
+
+  return {
+    fetchApi,
+    fetchApiBlob,
+    invokeAgent,
+    getDocumentDownloadUrl,
+    getArtifactDownloadUrl,
+    bidiAgentRuntimeArn,
+    getCredentials,
+    userId: user?.profile?.['cognito:username'] as string | undefined,
+  };
+}
