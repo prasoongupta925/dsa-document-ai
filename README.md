@@ -9,7 +9,7 @@ before it goes to a lender, fills the eligibility sheet from the documents and t
 report, and works out what each lender can offer. It runs serverless on AWS in Mumbai
 (ap-south-1) and costs about $3 a month when nobody uses it.
 
-**Live demo (no login, read-only, synthetic data):** {DEMO_URL}
+**Live demo (no login, read-only, synthetic data):** https://d38xa0wmy8btd1.cloudfront.net
 
 Built by Prasoon Gupta.
 
