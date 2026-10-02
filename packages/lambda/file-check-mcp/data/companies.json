@@ -1,0 +1,537 @@
+{
+  "sample": true,
+  "label": "sample policy — replace with your lender grid",
+  "version": "2026-09-30-sample",
+  "note": "SAMPLE employer list with SAMPLE company categories per lender for a demo; the categories are not any lender's real list. Replace with your lender grid. A company missing from a lender's categories is unlisted for that lender (its unlisted_company policy applies). Entries marked synthetic are the fictional employers of the demo applicants.",
+  "companies": [
+    {
+      "name": "Konkan Softworks Pvt Ltd",
+      "aliases": ["Konkan Softworks"],
+      "employment_type": "private_limited",
+      "synthetic": true,
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Deccan Retail Pvt Ltd",
+      "aliases": ["Deccan Retail"],
+      "employment_type": "private_limited",
+      "synthetic": true,
+      "categories": {
+        "hdfc_bank": "CAT B",
+        "icici_bank": "CAT B",
+        "axis_bank": "CAT C",
+        "bajaj_finance": "Standard",
+        "tata_capital": "CAT 2"
+      }
+    },
+    {
+      "name": "Varad Logistics LLP",
+      "aliases": ["Varad Logistics"],
+      "employment_type": "llp",
+      "synthetic": true,
+      "categories": {
+        "icici_bank": "CAT C",
+        "bajaj_finance": "Standard",
+        "tata_capital": "CAT 3"
+      }
+    },
+    {
+      "name": "Tata Consultancy Services Ltd",
+      "aliases": ["TCS", "Tata Consultancy Services"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "Super CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Infosys Ltd",
+      "aliases": ["Infosys"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "Super CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Wipro Ltd",
+      "aliases": ["Wipro"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "Super CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "HCL Technologies Ltd",
+      "aliases": ["HCL", "HCL Technologies", "HCLTech"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "Super CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Tech Mahindra Ltd",
+      "aliases": ["Tech Mahindra"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Accenture Solutions Pvt Ltd",
+      "aliases": ["Accenture"],
+      "employment_type": "private_limited",
+      "categories": {
+        "hdfc_bank": "Super CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Cognizant Technology Solutions India Pvt Ltd",
+      "aliases": ["Cognizant", "CTS"],
+      "employment_type": "private_limited",
+      "categories": {
+        "hdfc_bank": "Super CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Capgemini Technology Services India Ltd",
+      "aliases": ["Capgemini"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "IBM India Pvt Ltd",
+      "aliases": ["IBM", "IBM India"],
+      "employment_type": "private_limited",
+      "categories": {
+        "hdfc_bank": "Super CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Larsen & Toubro Ltd",
+      "aliases": ["L&T", "Larsen and Toubro", "L and T"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "Super CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Reliance Industries Ltd",
+      "aliases": ["Reliance Industries", "RIL"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "Super CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Tata Motors Ltd",
+      "aliases": ["Tata Motors"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Mahindra & Mahindra Ltd",
+      "aliases": ["Mahindra and Mahindra", "M&M"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Bajaj Auto Ltd",
+      "aliases": ["Bajaj Auto"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT B",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 2"
+      }
+    },
+    {
+      "name": "Godrej & Boyce Manufacturing Co Ltd",
+      "aliases": ["Godrej & Boyce", "Godrej and Boyce"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT B",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 2"
+      }
+    },
+    {
+      "name": "Asian Paints Ltd",
+      "aliases": ["Asian Paints"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Hindustan Unilever Ltd",
+      "aliases": ["HUL", "Hindustan Unilever"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "Super CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "ITC Ltd",
+      "aliases": ["ITC"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Tata Steel Ltd",
+      "aliases": ["Tata Steel"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "JSW Steel Ltd",
+      "aliases": ["JSW Steel"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT B",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 2"
+      }
+    },
+    {
+      "name": "Cipla Ltd",
+      "aliases": ["Cipla"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Sun Pharmaceutical Industries Ltd",
+      "aliases": ["Sun Pharma", "Sun Pharmaceutical"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Lupin Ltd",
+      "aliases": ["Lupin"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT B",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 2"
+      }
+    },
+    {
+      "name": "Bharti Airtel Ltd",
+      "aliases": ["Airtel", "Bharti Airtel"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Reliance Jio Infocomm Ltd",
+      "aliases": ["Jio", "Reliance Jio"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT B",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 2"
+      }
+    },
+    {
+      "name": "Amazon Development Centre (India) Pvt Ltd",
+      "aliases": ["Amazon", "Amazon India"],
+      "employment_type": "private_limited",
+      "categories": {
+        "hdfc_bank": "Super CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Super Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Flipkart Internet Pvt Ltd",
+      "aliases": ["Flipkart"],
+      "employment_type": "private_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT B",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 2"
+      }
+    },
+    {
+      "name": "Persistent Systems Ltd",
+      "aliases": ["Persistent", "Persistent Systems"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT B",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 2"
+      }
+    },
+    {
+      "name": "KPIT Technologies Ltd",
+      "aliases": ["KPIT", "KPIT Technologies"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT B",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 2"
+      }
+    },
+    {
+      "name": "Thermax Ltd",
+      "aliases": ["Thermax"],
+      "employment_type": "public_limited",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT B",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 2"
+      }
+    },
+    {
+      "name": "State Bank of India",
+      "aliases": ["SBI"],
+      "employment_type": "government",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Life Insurance Corporation of India",
+      "aliases": ["LIC", "LIC of India"],
+      "employment_type": "government",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Oil and Natural Gas Corporation Ltd",
+      "aliases": ["ONGC"],
+      "employment_type": "government",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Bharat Petroleum Corporation Ltd",
+      "aliases": ["BPCL", "Bharat Petroleum"],
+      "employment_type": "government",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Indian Railways",
+      "aliases": ["Central Railway", "Western Railway"],
+      "employment_type": "government",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Government of Maharashtra",
+      "aliases": ["Maharashtra State Government"],
+      "employment_type": "government",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Municipal Corporation of Greater Mumbai",
+      "aliases": ["MCGM", "BMC", "Brihanmumbai Municipal Corporation"],
+      "employment_type": "government",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Thane Municipal Corporation",
+      "aliases": ["TMC", "Thane Mahanagarpalika"],
+      "employment_type": "government",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Maharashtra State Electricity Distribution Co Ltd",
+      "aliases": ["MSEDCL", "Mahavitaran"],
+      "employment_type": "government",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT A",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Indian Navy",
+      "aliases": [],
+      "employment_type": "defence",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    },
+    {
+      "name": "Indian Army",
+      "aliases": [],
+      "employment_type": "defence",
+      "categories": {
+        "hdfc_bank": "CAT A",
+        "icici_bank": "CAT A",
+        "axis_bank": "CAT B",
+        "bajaj_finance": "Prime",
+        "tata_capital": "CAT 1"
+      }
+    }
+  ]
+}

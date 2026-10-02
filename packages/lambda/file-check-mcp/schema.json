@@ -1,0 +1,131 @@
+[
+  {
+    "name": "run_file_check",
+    "description": "Deterministic loan-file readiness check for the current project. Loads the structured facts extracted from every analysed document, groups documents by applicant (PAN, else compatible name), applies a loan-product checklist (default: salaried personal loan) and returns READY / NOT READY per applicant with the exact missing items (months) and consistency findings (PAN, name, employer, declared vs actual net salary, declared EMIs vs bank EMI debits), each citing document names, plus needs_review items, an obligations summary from the bank statement (fixed loan EMIs, other fixed debits such as rent / SIP / bills, variable and one-off debits) and an indicative FOIR (existing EMI ratio and max new EMI at the checklist's FOIR). ALWAYS call this for any question about whether a file is complete, ready, consistent or what is missing, and about existing EMIs, monthly obligations, FOIR or how much new EMI fits. Report its verdict and findings exactly; never decide the verdict yourself. Label FOIR results 'indicative — the lender's policy decides'.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "description": "The unique identifier of the project"
+        },
+        "checklist_id": {
+          "type": "string",
+          "description": "Checklist id from list_checklists. Omit to use the default (salaried personal loan)."
+        },
+        "applicant": {
+          "type": "string",
+          "description": "Optional applicant name or PAN to check only that applicant"
+        },
+        "reference_month": {
+          "type": "string",
+          "description": "Optional YYYY-MM month that 'last N months' counts back from. Omit to use the latest salary-slip month."
+        }
+      },
+      "required": ["project_id"]
+    }
+  },
+  {
+    "name": "list_checklists",
+    "description": "List the loan-product checklists that run_file_check can apply (id, name, product, applicant type, required documents and rules).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "description": "The unique identifier of the project"
+        }
+      }
+    }
+  },
+  {
+    "name": "emi_calculator",
+    "description": "Exact EMI calculator (no LLM): the monthly EMI of a loan amount at an annual rate over a tenure (reducing balance, Excel PMT, rounded to the rupee), total interest, total amount payable, the principal / interest split in %, a yearly amortisation schedule and, with new_annual_rate_pct, a balance transfer: the outstanding at the current rate vs the new rate over the remaining tenure (new EMI, monthly and total saving). ALWAYS call this for any EMI, interest, total payable, amortisation or balance-transfer saving figure, and never compute these yourself, not even roughly. Quote `summary` and `display` exactly (Indian digit grouping) and call them indicative.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "principal": {
+          "type": "number",
+          "description": "Loan amount in rupees (for a balance transfer: the current outstanding)"
+        },
+        "annual_rate_pct": {
+          "type": "number",
+          "description": "Annual interest rate in percent, e.g. 11 or 10.49 (for a balance transfer: the current rate)"
+        },
+        "tenure_months": {
+          "type": "integer",
+          "description": "Tenure in months, 1 to 480 (for a balance transfer: the remaining tenure); or give tenure_years"
+        },
+        "tenure_years": {
+          "type": "number",
+          "description": "Tenure in years, instead of tenure_months (e.g. 30 or 2.5)"
+        },
+        "new_annual_rate_pct": {
+          "type": "number",
+          "description": "Optional: the new lender's annual rate in percent, for a balance-transfer comparison"
+        },
+        "project_id": {
+          "type": "string",
+          "description": "The unique identifier of the project"
+        }
+      },
+      "required": ["principal", "annual_rate_pct"]
+    }
+  },
+  {
+    "name": "foir_eligibility",
+    "description": "Quick FOIR eligibility from typed figures (no LLM, no saved data): maximum EMI = FOIR% x net monthly income - existing EMIs, and the maximum loan that EMI repays at an annual rate over a tenure (the method of varunikaloans.example/check-eligibility and of the eligibility sheet's FOIR eligibility). Use it for a quick estimate; for an applicant of this project use loan_eligibility. Never compute these figures yourself. Quote `summary` and `display` exactly and call them indicative.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "net_monthly_income": {
+          "type": "number",
+          "description": "Net (take-home) monthly income in rupees"
+        },
+        "existing_emis": {
+          "type": "number",
+          "description": "Total of the existing monthly EMIs in rupees (0 if none)"
+        },
+        "foir_pct": {
+          "type": "number",
+          "description": "FOIR in percent of the income, e.g. 50"
+        },
+        "annual_rate_pct": {
+          "type": "number",
+          "description": "Annual interest rate in percent, e.g. 11"
+        },
+        "tenure_months": {
+          "type": "integer",
+          "description": "Tenure in months, 1 to 480 (or give tenure_years)"
+        },
+        "tenure_years": {
+          "type": "number",
+          "description": "Tenure in years, instead of tenure_months (e.g. 30 or 2.5)"
+        },
+        "project_id": {
+          "type": "string",
+          "description": "The unique identifier of the project"
+        }
+      },
+      "required": ["net_monthly_income", "foir_pct", "annual_rate_pct"]
+    }
+  },
+  {
+    "name": "loan_eligibility",
+    "description": "Deterministic lender eligibility of one applicant of the current project (no LLM), from the inputs saved on the applicant's Eligibility & lenders (CIBIL) page, with the file check's verified salary and bank-statement EMIs: per lender (SAMPLE lender policies) the status (Eligible / Not serviceable / Not eligible, with every reason), eligible amount, ROI, tenure, EMI and the sheet's working (calculation tenure, per-lakh EMI, FOIR and multiplier eligibility), and the best lender. ALWAYS call this for how much loan an applicant can get, at which lender, or the EMI there; never estimate eligibility yourself. Report `summary` and the figures exactly, label them 'indicative — the lender decides' and keep 'sample policy — replace with your lender grid'. If it says no inputs are saved, tell the user to fill in and save the applicant's Eligibility & lenders page first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "description": "The unique identifier of the project"
+        },
+        "applicant": {
+          "type": "string",
+          "description": "The applicant's full name or PAN, as the file check shows it"
+        }
+      },
+      "required": ["project_id", "applicant"]
+    }
+  }
+]
