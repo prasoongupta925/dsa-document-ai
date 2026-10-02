@@ -1,0 +1,23 @@
+# DSA Document AI - Voice backend. Python 3.12. Pinned; resolved offline against the
+# versions tested with pipecat-ai 1.3.0 (backend/tests), for linux x86_64 and aarch64.
+# Extras: aws = aioboto3 (Transcribe, Bedrock, Polly) + websockets; websocket = FastAPI transport.
+# No "silero" extra: in 1.3.0 it is empty (Silero VAD and smart-turn v3 run on the base onnxruntime).
+pipecat-ai[aws,websocket]==1.3.0
+boto3==1.40.61
+aioboto3==15.5.0
+fastapi==0.142.2
+uvicorn==0.54.0
+python-multipart==0.0.32
+python-dotenv==1.1.1
+httpx==0.28.1
+aiohttp==3.14.3
+pyjwt[crypto]==2.15.1
+cryptography==46.0.3
+websockets==15.0.1
+loguru==0.7.3
+numpy==1.26.4
+onnxruntime==1.24.3
+# WhatsApp Business Calling (WebRTC). Headless OpenCV: Pipecat's WebRTC transport imports cv2,
+# and the GUI build would need libGL in the image.
+aiortc==1.14.0
+opencv-python-headless==4.11.0.86

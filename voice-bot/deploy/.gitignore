@@ -1,0 +1,3 @@
+# release zips made by deploy.sh --package-only
+dist/
+*.zip

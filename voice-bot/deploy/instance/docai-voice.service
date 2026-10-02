@@ -1,0 +1,70 @@
+# DSA Document AI - Voice. Installed by deploy/instance/release.sh; logs: journalctl -u docai-voice
+[Unit]
+Description=DSA Document AI - Voice (Pipecat voice bot on port 8080)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=30
+
+[Service]
+Type=simple
+User=voicebot
+Group=voicebot
+WorkingDirectory=/opt/docai-voice/current/backend
+# Logs: a server that was stopped for weeks drops its journal files older than 6 days as soon as the service
+# starts (as root, "+"; a failure here does not stop the start, "-").
+ExecStartPre=-+/usr/bin/journalctl --quiet --rotate --vacuum-time=6d
+# Leftovers of a call that was cut off (recordings not uploaded) are deleted at start and at stop: nothing is kept
+# longer than needed, and the disk of a stopped server holds no recording.
+ExecStartPre=/bin/sh -c 'mkdir -p /var/lib/docai-voice/tmp /var/lib/docai-voice/recordings && find /var/lib/docai-voice/tmp /var/lib/docai-voice/recordings -mindepth 1 -delete'
+ExecStart=/opt/docai-voice/current/.venv/bin/python -X faulthandler /opt/docai-voice/current/deploy/app/serve.py
+ExecStopPost=-/bin/sh -c 'find /var/lib/docai-voice/tmp /var/lib/docai-voice/recordings -mindepth 1 -delete'
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+Environment=AWS_REGION=ap-south-1 AWS_DEFAULT_REGION=ap-south-1 AWS_STS_REGIONAL_ENDPOINTS=regional
+Environment=DOCAI_SSM_PREFIX=/docai-voice
+Environment=FRONTEND_DIR=/opt/docai-voice/current/frontend
+Environment=RELEASE_FILE=/opt/docai-voice/current/RELEASE.json
+Environment=HOME=/var/lib/docai-voice
+Environment=TMPDIR=/var/lib/docai-voice/tmp
+Environment=RECORDINGS_DIR=/var/lib/docai-voice/recordings
+Environment=NLTK_DATA=/opt/docai-voice/nltk_data
+Environment=NUMBA_CACHE_DIR=/var/lib/docai-voice/numba
+Environment=PORT=8080
+Restart=always
+RestartSec=5
+TimeoutStartSec=300
+TimeoutStopSec=20
+KillMode=mixed
+LimitNOFILE=65536
+LimitCORE=0
+StateDirectory=docai-voice
+StateDirectoryMode=0700
+UMask=0077
+MemoryHigh=80%
+MemoryMax=90%
+TasksMax=1024
+# Hardening: the code is read-only for the service; it can write only to /var/lib/docai-voice and its own /tmp.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

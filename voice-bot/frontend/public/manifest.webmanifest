@@ -1,0 +1,16 @@
+{
+    "name": "DSA Document AI — Voice",
+    "short_name": "SD Voice",
+    "description": "Voice assistant for loan files: what is missing, indicative eligibility, reminders. English, Hindi, Marathi.",
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "orientation": "portrait",
+    "background_color": "#060a13",
+    "theme_color": "#060a13",
+    "icons": [
+        { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+        { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+        { "src": "/icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    ]
+}

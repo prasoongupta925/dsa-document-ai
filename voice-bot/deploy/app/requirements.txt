@@ -1,0 +1,5 @@
+# Packages deploy/app/serve.py needs. release.sh installs this file together with backend/requirements.txt in one
+# resolution, so the backend's own pins win; these are only lower bounds.
+uvicorn>=0.31.1
+starlette>=0.40
+boto3>=1.38.25

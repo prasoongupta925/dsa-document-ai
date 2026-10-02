@@ -1,0 +1,11 @@
+{
+    "region": "ap-south-1",
+    "userPoolId": "ap-south-1_XXXXXXXXX",
+    "userPoolClientId": "REPLACE_WITH_APP_CLIENT_ID",
+    "websocketUrl": "/ws",
+    "idpAppUrl": "https://REPLACE_WITH_DOCUMENT_AI_DOMAIN",
+    "qaProjectId": "",
+    "pipeline": "transcribe-polly",
+    "defaultLanguage": "hi-IN",
+    "maxCallSeconds": 600
+}

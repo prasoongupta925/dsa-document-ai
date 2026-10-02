@@ -1,0 +1,4 @@
+# Runtime config is written by the deploy (or copied from public/config.example.json for local runs).
+public/config.json
+# End-to-end test output (screenshots, fake microphone WAV).
+e2e/.out/

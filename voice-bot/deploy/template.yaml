@@ -1,0 +1,654 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  DSA Document AI - Voice. One Graviton EC2 (t4g.small, Amazon Linux 2023) behind CloudFront in
+  ap-south-1. Speech, the LLMs (Kimi K2.5, then gpt-oss-120b, both in-Region) and IDP calls all stay in
+  Mumbai; IAM refuses every cross-Region inference profile. Deploy with deploy/deploy.sh.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: 'IDP (filled in by deploy.sh from the IDP-V2-Application stack)'}
+        Parameters: [IdpApiUrl, IdpApiId, IdpAppUrl, UserPoolId]
+      - Label: {default: 'Network (default VPC, filled in by deploy.sh)'}
+        Parameters: [VpcId, SubnetId, CloudFrontPrefixListId, OriginVerifySecret, RestrictViewersToIndia]
+      - Label: {default: 'Server'}
+        Parameters: [CreateInstance, InstanceType, VolumeSize, LatestAmiId, AmiIdOverride]
+      - Label: {default: 'Channels and models'}
+        Parameters: [EnableWhatsApp, WebRtcUdpPortFrom, WebRtcUdpPortTo, ExtraEnvJson]
+
+Parameters:
+  IdpApiUrl:
+    Type: String
+    Description: IDP backend HTTP API URL (output of stack IDP-V2-Application whose key contains BackendUrl).
+    AllowedPattern: '^https://[a-z0-9]{10}\.execute-api\.ap-south-1\.amazonaws\.com/?$'
+  IdpApiId:
+    Type: String
+    Description: API Gateway id of the IDP backend (the first label of IdpApiUrl).
+    AllowedPattern: '^[a-z0-9]{10}$'
+  IdpAppUrl:
+    Type: String
+    Default: ''
+    Description: IDP web app URL, for the "back to Document AI" link (optional).
+    AllowedPattern: '^(https://[a-z0-9.-]+)?/?$'
+  UserPoolId:
+    Type: String
+    Description: The IDP's Cognito user pool. The voice app gets its own client in it, so the same logins work.
+    AllowedPattern: '^ap-south-1_[0-9A-Za-z]+$'
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Default VPC.
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: A public subnet of the default VPC (an AZ that offers t4g.small).
+  CloudFrontPrefixListId:
+    Type: String
+    Default: pl-9aa247f3
+    Description: Managed prefix list com.amazonaws.global.cloudfront.origin-facing in ap-south-1.
+    AllowedPattern: '^pl-[0-9a-f]{8,17}$'
+  OriginVerifySecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    AllowedPattern: '^[A-Za-z0-9_-]+$'
+    Description: >-
+      Random value CloudFront sends as X-Origin-Verify; the app rejects requests without it. deploy.sh keeps
+      it in SSM SecureString /docai-voice/secrets/ORIGIN_VERIFY.
+  RestrictViewersToIndia:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: CloudFront geo allow-list IN. Can block Plivo/Exotel/Meta webhooks sent from outside India.
+  CreateInstance:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: deploy.sh uses false on the very first run (bucket first, then the code zip, then the server).
+  InstanceType:
+    Type: String
+    Default: t4g.small
+    AllowedValues: [t4g.small, t4g.medium, t4g.large]
+    Description: Graviton (arm64) only. t4g.small = 2 vCPU burstable, 2 GiB.
+  VolumeSize:
+    Type: Number
+    Default: 12
+    MinValue: 8
+    MaxValue: 12
+    Description: Root volume, encrypted gp3, GiB.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: Amazon Linux 2023 arm64, resolved from the public SSM parameter.
+  AmiIdOverride:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(ami-[0-9a-f]{8,17})?$'
+    Description: >-
+      Pin the AMI. deploy.sh passes the running server's AMI so that a newer Amazon Linux release does not
+      replace the server on every deploy (deploy.sh --refresh-ami leaves this empty).
+  EnableWhatsApp:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Opens the UDP range WebRTC media needs (WhatsApp Business Calling) and all egress.
+  WebRtcUdpPortFrom:
+    Type: Number
+    Default: 32768
+    MinValue: 1024
+    MaxValue: 65535
+    Description: First UDP port for WebRTC media (Linux ephemeral range start; aiortc binds random ports).
+  WebRtcUdpPortTo:
+    Type: Number
+    Default: 60999
+    MinValue: 1024
+    MaxValue: 65535
+    Description: Last UDP port for WebRTC media.
+  ExtraEnvJson:
+    Type: String
+    Default: '{}'
+    AllowedPattern: '^\{.*\}$'
+    Description: Extra non-secret environment for the app, as a JSON object (stored in /docai-voice/stack-extra-env).
+
+Mappings:
+  InstanceSize:              # concurrent calls the bot accepts (each holds a Transcribe stream and VAD/turn models)
+    t4g.small: {MaxCalls: '4'}
+    t4g.medium: {MaxCalls: '8'}
+    t4g.large: {MaxCalls: '16'}
+
+Rules:
+  MumbaiOnly:
+    Assertions:
+      - Assert: !Equals [!Ref 'AWS::Region', ap-south-1]
+        AssertDescription: This stack runs in ap-south-1 (Mumbai) only.
+
+Conditions:
+  InstanceWanted: !Equals [!Ref CreateInstance, 'true']
+  HasAmiOverride: !Not [!Equals [!Ref AmiIdOverride, '']]
+  WhatsAppEnabled: !Equals [!Ref EnableWhatsApp, 'true']
+  IndiaOnly: !Equals [!Ref RestrictViewersToIndia, 'true']
+  HasIdpAppUrl: !Not [!Equals [!Ref IdpAppUrl, '']]
+
+Resources:
+  # ---------------------------------------------------------------- code bucket (7-day lifecycle)
+  CodeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          - Id: delete-everything-after-7-days
+            Status: Enabled
+            ExpirationInDays: 7
+            AbortIncompleteMultipartUpload: {DaysAfterInitiation: 1}
+      Tags:
+        - {Key: Project, Value: docai-voice}
+
+  CodeBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CodeBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: TlsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt CodeBucket.Arn, !Sub '${CodeBucket.Arn}/*']
+            Condition:
+              Bool: {'aws:SecureTransport': 'false'}
+          - Sid: CloudFrontReadsTheOfflinePageOnly
+            Effect: Allow
+            Principal: {Service: cloudfront.amazonaws.com}
+            Action: s3:GetObject
+            Resource: !Sub '${CodeBucket.Arn}/public/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+
+  OfflinePageAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-offline-page'
+        Description: CloudFront reads public/offline.html from the code bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ---------------------------------------------------------------- network
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - {Key: Name, Value: !Sub '${AWS::StackName}'}
+        - {Key: Project, Value: docai-voice}
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Voice bot - TCP 8080 from CloudFront origin-facing addresses only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourcePrefixListId: !Ref CloudFrontPrefixListId
+          Description: CloudFront origin-facing (the app also checks X-Origin-Verify)
+      SecurityGroupEgress:
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: 'HTTPS: AWS APIs, IDP, packages, phone providers'}
+        - {IpProtocol: tcp, FromPort: 8443, ToPort: 8443, CidrIp: 0.0.0.0/0, Description: Amazon Transcribe streaming WebSocket}
+      Tags:
+        - {Key: Name, Value: !Sub '${AWS::StackName}'}
+
+  WebRtcMediaIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: WhatsAppEnabled
+    Properties:
+      GroupId: !GetAtt AppSecurityGroup.GroupId
+      IpProtocol: udp
+      FromPort: !Ref WebRtcUdpPortFrom
+      ToPort: !Ref WebRtcUdpPortTo
+      CidrIp: 0.0.0.0/0
+      Description: WebRTC media for WhatsApp Business Calling
+
+  WebRtcEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: WhatsAppEnabled
+    Properties:
+      GroupId: !GetAtt AppSecurityGroup.GroupId
+      IpProtocol: '-1'
+      CidrIp: 0.0.0.0/0
+      Description: WebRTC (STUN/TURN/media to Meta)
+
+  # ---------------------------------------------------------------- instance role (least privilege)
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: DSA Document AI voice bot server - Mumbai speech and models (in-Region only), IDP API, own code and parameters
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Policies:
+        - PolicyName: voice-runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SpeechInMumbaiOnly
+                Effect: Allow
+                Action:
+                  - transcribe:StartStreamTranscription
+                  - transcribe:StartStreamTranscriptionWebSocket
+                  - polly:SynthesizeSpeech
+                Resource: '*'
+                Condition:
+                  StringEquals: {'aws:RequestedRegion': !Ref 'AWS::Region'}
+              # The LLM chain of StackEnvParameter (LLM_MODEL_CHAIN), invoked in-Region; tests/check_template.py
+              # keeps the two lists equal.
+              - Sid: InvokeApprovedModelsOnly
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/moonshotai.kimi-k2.5'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/openai.gpt-oss-120b-1:0'
+              # Mumbai only, even if a broader policy is attached later: every model ARN that is not an ap-south-1
+              # foundation model is refused. That covers global., apac. and in. inference profiles (in. also
+              # routes to Hyderabad), other Regions, application profiles, prompt routers, provisioned, custom
+              # and imported models, Marketplace endpoints and Bedrock system tools.
+              - Sid: DenyModelsOutsideMumbai
+                Effect: Deny
+                Action: 'bedrock:InvokeModel*'
+                NotResource: !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/*'
+              # Card-billed (AWS Marketplace) models, however they are reached: model, profile, the default
+              # prompt router named after the provider, and Bedrock Marketplace endpoints.
+              - Sid: DenyMarketplaceModels
+                Effect: Deny
+                Action: 'bedrock:InvokeModel*'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:marketplace/model-endpoint/*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:default-prompt-router/anthropic.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*anthropic.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/cohere.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*cohere.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/twelvelabs.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*twelvelabs.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/stability.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*stability.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/writer.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*writer.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/luma.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*luma.*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/openai.gpt-5*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*openai.gpt-5*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/openai.gpt-6*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*openai.gpt-6*'
+              # No Nova Sonic. Its bidirectional stream is authorised as bedrock:InvokeModel (IAM has no separate
+              # InvokeModelWithBidirectionalStream action), so the deny names the models.
+              - Sid: DenySpeechToSpeechModels
+                Effect: Deny
+                Action: 'bedrock:InvokeModel*'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/amazon.nova-sonic*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/amazon.nova-2-sonic*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*amazon.nova-sonic*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*amazon.nova-2-sonic*'
+              # Newer ways to reach models that this server never uses: Bedrock's OpenAI-compatible projects API
+              # (service prefix bedrock-mantle) and Bedrock API keys (bearer tokens).
+              - Sid: DenyOtherBedrockEntryPoints
+                Effect: Deny
+                Action:
+                  - 'bedrock-mantle:*'
+                  - bedrock:CallWithBearerToken
+                Resource: '*'
+              - Sid: DenyMarketplaceSubscriptions
+                Effect: Deny
+                Action: aws-marketplace:Subscribe
+                Resource: '*'
+              - Sid: CallIdpApi
+                Effect: Allow
+                Action: execute-api:Invoke
+                Resource: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*'
+              # The bot calls only GET projects, POST file-check, POST eligibility/calculate, GET eligibility/inputs,
+              # POST documents and PUT documents/*/status. IAM's * also spans '/', so each entry below is written
+              # not to match those (tests/simulate_iam.py checks both sides).
+              - Sid: DenyIdpDestructiveAndAdminRoutes
+                Effect: Deny
+                Action: execute-api:Invoke
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/DELETE/*'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/PATCH/*'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/POST/projects'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/POST/projects/*/applicants/erase'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/POST/projects/*/eligibility/login'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/PUT/projects/*/eligibility/inputs'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/*/projects/*/integrations/*'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/PUT/prompts/*'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/*/sagemaker/*'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/POST/projects/*/agents'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/PUT/projects/*/agents/*'
+                  # model-backed or batch jobs the bot never starts (cost): file Q&A, graph rebuilds, dataset
+                  # queries, document re-analysis
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/POST/projects/*/file-check/*'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/POST/projects/*/graph/*'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/POST/projects/*/datasets/*'
+                  - !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApiId}/*/POST/documents/*'
+              - Sid: ReadReleases
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${CodeBucket.Arn}/releases/*'
+              - Sid: ReadOwnParameters
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/docai-voice'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/docai-voice/*'
+              - Sid: DenyAllOtherParameters
+                Effect: Deny
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                  - ssm:GetParameterHistory
+                NotResource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/docai-voice'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/docai-voice/*'
+      Tags:
+        - {Key: Project, Value: docai-voice}
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  # ---------------------------------------------------------------- login: own client in the IDP user pool
+  VoiceWebClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPoolId
+      ClientName: docai-voice-web
+      GenerateSecret: false
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      SupportedIdentityProviders: [COGNITO]
+      AuthSessionValidity: 3
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 7
+      TokenValidityUnits: {AccessToken: minutes, IdToken: minutes, RefreshToken: days}
+
+  # ---------------------------------------------------------------- CloudFront (HTTPS + WebSocket)
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: DSA Document AI - Voice
+        PriceClass: PriceClass_200        # includes the Indian edge locations (PriceClass_100 does not)
+        HttpVersion: http2
+        IPV6Enabled: true
+        Origins:
+          - Id: app
+            DomainName: !Join
+              - ''
+              - - 'ec2-'
+                - !Join ['-', !Split ['.', !GetAtt ElasticIp.PublicIp]]
+                - !Sub '.${AWS::Region}.compute.amazonaws.com'
+            ConnectionAttempts: 2
+            ConnectionTimeout: 5
+            CustomOriginConfig:
+              HTTPPort: 8080
+              OriginProtocolPolicy: http-only
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 5
+            OriginCustomHeaders:
+              - HeaderName: X-Origin-Verify
+                HeaderValue: !Ref OriginVerifySecret
+          - Id: offline-page
+            DomainName: !GetAtt CodeBucket.RegionalDomainName
+            OriginPath: /public
+            OriginAccessControlId: !GetAtt OfflinePageAccessControl.Id
+            S3OriginConfig: {OriginAccessIdentity: ''}
+        DefaultCacheBehavior:   # app pages and any API route: never cached, every viewer header forwarded
+          TargetOriginId: app
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03  # Managed-SecurityHeadersPolicy
+          Compress: false
+        CacheBehaviors:
+          - PathPattern: /ws
+            TargetOriginId: app
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            Compress: false
+          - PathPattern: /ws/*
+            TargetOriginId: app
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            Compress: false
+          - PathPattern: /phone/*
+            TargetOriginId: app
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            Compress: false
+          - PathPattern: /whatsapp*
+            TargetOriginId: app
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            Compress: false
+          - PathPattern: /assets/*   # Vite's hashed JS/CSS: cached at the edge, compressed
+            TargetOriginId: app
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6          # Managed-CachingOptimized
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+            Compress: true
+          - PathPattern: /offline.html
+            TargetOriginId: offline-page
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+            Compress: true
+        # Server stopped (stop.sh): the connection times out, CloudFront answers 504 -> the paused page instead.
+        # 502/503 are not mapped: the backend sends its own (e.g. a provider refusing an outbound call), and
+        # CloudFront would replace their bodies.
+        CustomErrorResponses:
+          - {ErrorCode: 504, ResponseCode: 503, ResponsePagePath: /offline.html, ErrorCachingMinTTL: 5}
+        Restrictions: !If
+          - IndiaOnly
+          - GeoRestriction: {RestrictionType: whitelist, Locations: [IN]}
+          - !Ref 'AWS::NoValue'
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+      Tags:
+        - {Key: Project, Value: docai-voice}
+
+  # ---------------------------------------------------------------- app settings (read by deploy/app/serve.py)
+  StackEnvParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /docai-voice/stack-env
+      Type: String
+      Tier: Standard
+      Description: Non-secret settings of the voice bot, written by CloudFormation (JSON object of env vars)
+      Value: !Sub     # names as read by backend/config.py (and deploy/app/serve.py for config.json)
+        - >-
+          {"AWS_REGION":"${AWS::Region}","AWS_DEFAULT_REGION":"${AWS::Region}",
+          "COGNITO_USER_POOL_ID":"${UserPoolId}","COGNITO_APP_CLIENT_IDS":"${VoiceWebClient}",
+          "USER_POOL_ID":"${UserPoolId}","APP_CLIENT_ID":"${VoiceWebClient}",
+          "IDP_API_URL":"${IdpApiUrl}","IDP_APP_URL":"${IdpApp}",
+          "PUBLIC_HOST":"${Distribution.DomainName}","ALLOWED_ORIGINS":"https://${Distribution.DomainName}",
+          "LLM_MODEL_CHAIN":"moonshotai.kimi-k2.5,openai.gpt-oss-120b-1:0","LLM_MUMBAI_ONLY":"true",
+          "MAX_CONCURRENT_CALLS":"${MaxCalls}","LOG_LEVEL":"INFO","LOG_JSON":"true"}
+        - IdpApp: !If [HasIdpAppUrl, !Ref IdpAppUrl, '']
+          MaxCalls: !FindInMap [InstanceSize, !Ref InstanceType, MaxCalls]
+
+  ExtraEnvParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /docai-voice/stack-extra-env
+      Type: String
+      Tier: Standard
+      Description: Extra non-secret settings of the voice bot (template parameter ExtraEnvJson)
+      Value: !Ref ExtraEnvJson
+
+  # ---------------------------------------------------------------- the server
+  Instance:
+    Type: AWS::EC2::Instance
+    Condition: InstanceWanted
+    DependsOn: [StackEnvParameter, ExtraEnvParameter]
+    CreationPolicy:
+      ResourceSignal: {Count: 1, Timeout: PT30M}
+    Properties:
+      ImageId: !If [HasAmiOverride, !Ref AmiIdOverride, !Ref LatestAmiId]
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      CreditSpecification: {CPUCredits: unlimited}
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+        HttpPutResponseHopLimit: 1
+        InstanceMetadataTags: disabled
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          SubnetId: !Ref SubnetId
+          GroupSet: [!GetAtt AppSecurityGroup.GroupId]
+          AssociatePublicIpAddress: true     # internet during first boot; the Elastic IP replaces it afterwards
+          DeleteOnTermination: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref VolumeSize
+            Encrypted: true
+            DeleteOnTermination: true
+      PropagateTagsToVolumeOnCreation: true
+      Tags:
+        - {Key: Name, Value: !Sub '${AWS::StackName}'}
+        - {Key: Project, Value: docai-voice}
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # First boot only (cloud-init): machine setup, then the latest release from S3.
+          # Each release is installed by deploy/instance/release.sh, shipped inside the code zip.
+          set -uo pipefail
+          STACK='${AWS::StackName}'
+          REGION='${AWS::Region}'
+          BUCKET='${CodeBucket}'
+          UV_VERSION=0.11.16
+          UV_SHA256=8c9d0f0ee98166ae6ab198747519ba6f25db29d185bd2ae5960ecebc91a5c22a
+          BASE=/opt/docai-voice
+          export HOME=/root AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION"
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          log() { echo "[docai-voice] $(date -u +%H:%M:%S) $*"; }
+          signal() {
+            sig=$(command -v cfn-signal || echo /opt/aws/bin/cfn-signal)
+            "$sig" --exit-code "$1" --reason "$2" --stack "$STACK" --resource Instance --region "$REGION" || log "cfn-signal failed"
+          }
+          fail() { log "FAILED: $1"; signal 1 "$1"; exit 1; }
+
+          log "1/6 OS packages"
+          dnf -y -q install aws-cfn-bootstrap gcc gcc-c++ make git || fail "dnf install"
+
+          log "2/6 journald: no entry older than 7 days; no core dumps"
+          mkdir -p /etc/systemd/journald.conf.d /etc/systemd/coredump.conf.d
+          # Retention works per file: files rotate every 12 h and are deleted once their newest entry is 6 days old.
+          printf '[Journal]\nStorage=persistent\nMaxFileSec=12h\nMaxRetentionSec=6day\nSystemMaxUse=300M\n' > /etc/systemd/journald.conf.d/60-docai-voice.conf
+          printf '[Coredump]\nStorage=none\nProcessSizeMax=0\n' > /etc/systemd/coredump.conf.d/60-docai-voice.conf
+          systemctl restart systemd-journald
+
+          log "3/6 service user and folders"
+          id voicebot >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /var/lib/docai-voice --shell /sbin/nologin voicebot || fail "useradd voicebot"
+          install -d -m 0755 "$BASE" "$BASE/releases"
+          install -d -m 0700 /var/cache/docai-voice
+
+          log "4/6 uv $UV_VERSION"
+          work=$(mktemp -d)
+          curl -fsSL --retry 5 -o "$work/uv.tar.gz" "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-aarch64-unknown-linux-gnu.tar.gz" || fail "uv download"
+          echo "$UV_SHA256  $work/uv.tar.gz" | sha256sum -c --quiet - || fail "uv checksum mismatch"
+          tar -xzf "$work/uv.tar.gz" -C "$work" || fail "uv unpack"
+          install -m 0755 "$work/uv-aarch64-unknown-linux-gnu/uv" "$work/uv-aarch64-unknown-linux-gnu/uvx" /usr/local/bin/ || fail "uv install"
+
+          log "5/6 Python 3.12 (uv python install)"
+          UV_PYTHON_INSTALL_DIR="$BASE/python" uv python install 3.12 || fail "uv python install 3.12"
+          chmod -R a+rX "$BASE/python"
+
+          log "6/6 latest release"
+          aws s3 cp --only-show-errors "s3://$BUCKET/releases/latest.zip" "$work/release.zip" || fail "download s3://$BUCKET/releases/latest.zip"
+          python3 -c 'import sys, zipfile; open(sys.argv[2], "wb").write(zipfile.ZipFile(sys.argv[1]).read("deploy/instance/release.sh"))' "$work/release.zip" "$work/release.sh" || fail "deploy/instance/release.sh missing from the zip"
+          bash "$work/release.sh" "$work/release.zip" || fail "release install failed (journalctl -u docai-voice)"
+          rm -rf "$work"
+          signal 0 "voice bot answers /health"
+          log "done"
+
+  ElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: InstanceWanted
+    Properties:
+      AllocationId: !GetAtt ElasticIp.AllocationId
+      InstanceId: !Ref Instance
+
+Outputs:
+  Url:
+    Description: Open this on a phone or laptop (HTTPS, microphone allowed)
+    Value: !Sub 'https://${Distribution.DomainName}'
+  DistributionDomainName:
+    Value: !GetAtt Distribution.DomainName
+  DistributionId:
+    Value: !Ref Distribution
+  CodeBucketName:
+    Value: !Ref CodeBucket
+  ElasticIp:
+    Value: !GetAtt ElasticIp.PublicIp
+  OriginDomainName:
+    Value: !Join ['', ['ec2-', !Join ['-', !Split ['.', !GetAtt ElasticIp.PublicIp]], !Sub '.${AWS::Region}.compute.amazonaws.com']]
+  UserPoolId:
+    Value: !Ref UserPoolId
+  UserPoolClientId:
+    Value: !Ref VoiceWebClient
+  InstanceRoleName:
+    Value: !Ref InstanceRole
+  SecurityGroupId:
+    Value: !GetAtt AppSecurityGroup.GroupId
+  InstanceId:
+    Condition: InstanceWanted
+    Value: !Ref Instance
