@@ -34,6 +34,7 @@ import AskSection from './AskSection';
 import EraseApplicantDialog, { EraseResultCard } from './EraseApplicant';
 import CallProjectNote, { isCallRecordingsOnly } from './CallProjectNote';
 import { useItemConfirmations } from './confirmations';
+import { PUBLIC_DEMO } from '../../demo/mode';
 
 /** Where to scroll when the panel is opened from a "Show me" button. */
 export interface FileCheckFocus {
@@ -477,7 +478,7 @@ export default function FileCheckPanel({
                 lastRunAt={lastRunAt}
                 onPainPoint={onPainPoint}
                 product={resultProduct}
-                onEraseApplicant={openErase}
+                onEraseApplicant={PUBLIC_DEMO ? undefined : openErase}
                 onOpenEligibility={onOpenEligibility}
                 confirmations={{
                   busyKey: itemConfirmations.busyKey,

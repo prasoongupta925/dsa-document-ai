@@ -24,6 +24,7 @@ import type {
   BidiModelType,
   VoiceChatState,
 } from './types';
+import { PUBLIC_DEMO } from '../../demo/mode';
 
 interface InputBoxVoiceChat {
   mode: boolean;
@@ -622,9 +623,10 @@ export default function ChatInputBox({
           {/* Action Bar */}
           <div className="flex gap-2 w-full items-center">
             <div className="flex-1 flex items-center gap-1">
-              {/* Attach file button */}
+              {/* Attach file button (no uploads in the public demo) */}
               <button
                 type="button"
+                hidden={PUBLIC_DEMO}
                 onClick={() => fileInputRef.current?.click()}
                 className="inline-flex items-center justify-center h-8 w-8 rounded-lg transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10 active:scale-95"
               >
@@ -632,7 +634,7 @@ export default function ChatInputBox({
               </button>
 
               {/* Tools popover */}
-              {(onAgentSelect || voiceChat.available) && (
+              {(onAgentSelect || voiceChat.available || PUBLIC_DEMO) && (
                 <div className="relative" ref={toolsMenuRef}>
                   <button
                     type="button"

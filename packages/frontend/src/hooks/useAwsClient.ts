@@ -8,6 +8,12 @@ import {
   requestDocumentDownloadUrl,
 } from '../lib/presignedUrls';
 import { ApiError, errorDetailFromBody } from '../lib/apiError';
+import { DEMO_USERNAME, DemoReadOnlyError, PUBLIC_DEMO } from '../demo/mode';
+import {
+  demoFetchApi,
+  demoFetchApiBlob,
+  demoInvokeAgent,
+} from '../demo/api';
 
 const CREDENTIAL_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
@@ -158,7 +164,7 @@ function extractRegionFromArn(arn: string): string {
   return arn.split(':')[3];
 }
 
-export function useAwsClient() {
+function useLiveAwsClient() {
   const { apis, cognitoProps, agentRuntimeArn, bidiAgentRuntimeArn } =
     useRuntimeConfig();
   const { user } = useAuth();
@@ -358,3 +364,30 @@ export function useAwsClient() {
     userId: user?.profile?.['cognito:username'] as string | undefined,
   };
 }
+
+// Public demo (VITE_PUBLIC_DEMO=1): one stable client whose calls are answered
+// in the browser from the snapshots (src/demo/api.ts); no AWS credentials.
+const noDownloads = () =>
+  Promise.reject(
+    new DemoReadOnlyError(
+      'Downloading documents is not part of the read-only demo.',
+    ),
+  );
+const DEMO_CLIENT: ReturnType<typeof useLiveAwsClient> = {
+  fetchApi: demoFetchApi,
+  fetchApiBlob: demoFetchApiBlob,
+  invokeAgent: demoInvokeAgent,
+  getDocumentDownloadUrl: noDownloads,
+  getArtifactDownloadUrl: noDownloads,
+  bidiAgentRuntimeArn: undefined,
+  getCredentials: () =>
+    Promise.reject(new DemoReadOnlyError('No AWS access in the demo.')),
+  userId: DEMO_USERNAME,
+};
+
+function useDemoAwsClient(): ReturnType<typeof useLiveAwsClient> {
+  return DEMO_CLIENT;
+}
+
+/** The backend, agent and download calls (the public demo answers them locally). */
+export const useAwsClient = PUBLIC_DEMO ? useDemoAwsClient : useLiveAwsClient;

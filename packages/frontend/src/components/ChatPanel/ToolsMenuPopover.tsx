@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { Check, ChevronRight, Mic, Settings2, Sparkles } from 'lucide-react';
 import type { Agent, BidiModelType } from './types';
 import { isBuiltinAgent, sortAgentsBuiltinFirst } from '../../lib/agents';
+import { PUBLIC_DEMO } from '../../demo/mode';
+import { VoiceDemoNote } from '../../demo/ui';
 
 interface ToolsMenuVoiceChat {
   available?: boolean;
@@ -45,6 +47,9 @@ export default function ToolsMenuPopover({
 
   return (
     <div className="absolute bottom-full left-0 mb-2 w-56 bg-[#e4eaf4] dark:bg-slate-800 border border-white/60 dark:border-white/30 rounded-xl shadow-lg z-50 py-1">
+      {/* Public demo: no live microphone, a note and the voice bot video */}
+      {PUBLIC_DEMO && <VoiceDemoNote compact />}
+
       {/* Voice Chat toggle */}
       {voiceChat.available && voiceChat.onModelSelect && (
         <button

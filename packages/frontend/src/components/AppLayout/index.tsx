@@ -1,4 +1,6 @@
 import { useAuth } from 'react-oidc-context';
+import { DEMO_DISPLAY_NAME, PUBLIC_DEMO } from '../../demo/mode';
+import { DemoBanner } from '../../demo/ui';
 import * as React from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -285,7 +287,9 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
     clearStaleState();
   };
 
-  const username = user?.profile?.['cognito:username'] as string;
+  const username = PUBLIC_DEMO
+    ? DEMO_DISPLAY_NAME
+    : (user?.profile?.['cognito:username'] as string);
 
   return (
     <div className="app-shell">
@@ -430,15 +434,22 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
               <div className="sidebar-user-menu-separator" />
 
-              {/* Logout */}
-              <button
-                type="button"
-                className="sidebar-user-menu-item sidebar-user-menu-item-danger"
-                onClick={handleLogout}
-              >
-                <LogoutIcon />
-                <span>{t('nav.logout')}</span>
-              </button>
+              {/* Logout (the public demo has no login) */}
+              {PUBLIC_DEMO ? (
+                <div className="sidebar-user-menu-item opacity-70 cursor-default">
+                  <LogoutIcon />
+                  <span>Read-only demo, no sign-in</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="sidebar-user-menu-item sidebar-user-menu-item-danger"
+                  onClick={handleLogout}
+                >
+                  <LogoutIcon />
+                  <span>{t('nav.logout')}</span>
+                </button>
+              )}
             </div>
           )}
 
@@ -476,6 +487,7 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
       {/* Main Content */}
       <main className="app-main">
+        {PUBLIC_DEMO && <DemoBanner />}
         <section
           className={`card${pathname.match(/^\/projects\/[^/]+/) ? ' card-fullbleed' : ''}`}
         >

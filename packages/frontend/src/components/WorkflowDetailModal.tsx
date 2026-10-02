@@ -45,6 +45,7 @@ import {
   getFileTypeLabel,
 } from '../lib/fileTypeUtils';
 import { s3KeyFromUri } from '../lib/presignedUrls';
+import { PUBLIC_DEMO } from '../demo/mode';
 
 /**
  * Fix broken markdown table rows where cell values contain newlines.
@@ -2604,7 +2605,7 @@ export default function WorkflowDetailModal({
                   // Text-based document preview (DOCX, Markdown, TXT, CSV)
                   if (
                     isTextSegment ||
-                    (isTextFile && !currentSegment?.image_url)
+                    ((isTextFile || PUBLIC_DEMO) && !currentSegment?.image_url)
                   ) {
                     const textContent =
                       currentSegment?.text_content ||

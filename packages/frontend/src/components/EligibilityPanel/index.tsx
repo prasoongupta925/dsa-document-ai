@@ -68,6 +68,8 @@ interface EligibilityPanelProps {
   onClose: () => void;
   /** Tab shown first (tests render one tab statically). */
   initialTab?: EligibilityTab;
+  /** Public demo deep link: run "Check eligibility" once the inputs are loaded. */
+  autoCalculate?: boolean;
 }
 
 /**
@@ -101,6 +103,7 @@ export default function EligibilityPanel({
   onBack,
   onClose,
   initialTab = 'profile',
+  autoCalculate = false,
 }: EligibilityPanelProps) {
   const { t } = useTranslation();
   const baseId = useId();
@@ -183,6 +186,16 @@ export default function EligibilityPanel({
     const result = await calculate(applicant, inputs);
     if (result) setTab('lenders');
   };
+
+  // Public demo deep link (?demo=eligibility): check once the inputs are in.
+  const autoCalculated = useRef<string | null>(null);
+  useEffect(() => {
+    if (!autoCalculate || !draft.loaded || draft.loading) return;
+    if (autoCalculated.current === applicant) return;
+    autoCalculated.current = applicant;
+    void handleCalculate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoCalculate, applicant, draft.loaded, draft.loading]);
 
   // A login is recomputed from the SAVED inputs: save what is on screen first.
   const handleLogin = (row: LenderEligibility) => {

@@ -3,6 +3,8 @@ import { AuthProvider, AuthProviderProps, useAuth } from 'react-oidc-context';
 import { Alert } from '../Alert';
 import CubeLoader from '../CubeLoader';
 import { useRuntimeConfig } from '../../hooks/useRuntimeConfig';
+import { PUBLIC_DEMO } from '../../demo/mode';
+import { DemoAuthProvider } from '../../demo/auth';
 
 /**
  * Sets up the Cognito auth.
@@ -10,7 +12,14 @@ import { useRuntimeConfig } from '../../hooks/useRuntimeConfig';
  * This assumes a runtime-config.json file is present at '/'. In order for Auth to be set up automatically,
  * the runtime-config.json must have the cognitoProps set.
  */
-const CognitoAuth: React.FC<PropsWithChildren> = ({ children }) => {
+const CognitoAuth: React.FC<PropsWithChildren> = ({ children }) =>
+  PUBLIC_DEMO ? (
+    <DemoAuthProvider>{children}</DemoAuthProvider>
+  ) : (
+    <LiveCognitoAuth>{children}</LiveCognitoAuth>
+  );
+
+const LiveCognitoAuth: React.FC<PropsWithChildren> = ({ children }) => {
   const { cognitoProps } = useRuntimeConfig();
 
   if (!cognitoProps) {

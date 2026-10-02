@@ -50,6 +50,9 @@ import { useFileCheck } from '../../hooks/useFileCheck';
 import { useFileCheckAsk } from '../../hooks/useFileCheckAsk';
 import { useEligibility } from '../../hooks/useEligibility';
 import { eligibilityApplicant } from '../../lib/eligibility';
+import { PUBLIC_DEMO } from '../../demo/mode';
+import { loadDemoData } from '../../demo/api';
+import { chatSuggestions } from '../../components/ChatPanel/suggestions';
 
 export const Route = createFileRoute('/projects/$projectId')({
   component: ProjectDetailPage,
@@ -258,6 +261,81 @@ function ProjectDetailPage() {
     chatSession.loadSessions,
     agentsHook.loadAgents,
     artifactsHook.loadArtifacts,
+  ]);
+
+  // --- Public demo deep links: ?demo=filecheck | eligibility | chip:<chip id> ---
+  const demoIntent = useMemo(
+    () =>
+      PUBLIC_DEMO
+        ? new URLSearchParams(window.location.search).get('demo')
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projectId],
+  );
+  const demoHandled = useRef<string | null>(null);
+  const demoCheckRan = useRef<string | null>(null);
+  const [demoEligibilityTab, setDemoEligibilityTab] = useState<
+    'profile' | 'cibil' | 'lenders'
+  >('profile');
+  const [demoAutoCalculate, setDemoAutoCalculate] = useState(false);
+  useEffect(() => {
+    if (!demoIntent || projectData.loading || !projectData.project) return;
+    const key = `${projectId}:${demoIntent}`;
+    if (demoHandled.current === key) return;
+    if (demoIntent === 'filecheck') {
+      demoHandled.current = key;
+      openFileCheck();
+    } else if (demoIntent === 'eligibility') {
+      demoHandled.current = key;
+      loadDemoData().then((data) => {
+        const a = data.meta.projects[projectId]?.applicants[0];
+        if (!a) return;
+        setDemoEligibilityTab('lenders');
+        setDemoAutoCalculate(true);
+        openEligibility({ applicant: a.name, pan: a.pan } as FileCheckApplicant);
+      });
+    } else if (demoIntent.startsWith('chip:') && agentsHook.agents.length > 0) {
+      demoHandled.current = key;
+      const s = chatSuggestions({
+        agents: agentsHook.agents,
+        documents: documentsHook.documents,
+        t,
+      });
+      const chip = [...s.primary, ...s.more].find(
+        (c) => c.id === demoIntent.slice(5),
+      );
+      if (chip) {
+        const agent = chip.agentId
+          ? (agentsHook.agents.find((a) => a.agent_id === chip.agentId) ?? null)
+          : null;
+        agentsHook.setSelectedAgent(agent);
+        chatSession.handleSendMessage([], chip.prompt, agent);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    demoIntent,
+    projectId,
+    projectData.loading,
+    projectData.project,
+    agentsHook.agents,
+    documentsHook.documents,
+  ]);
+  // ?demo=filecheck runs the check once the checklists are loaded.
+  useEffect(() => {
+    if (demoIntent !== 'filecheck' || !showFileCheck) return;
+    if (demoCheckRan.current === projectId) return;
+    if (fileCheck.checklistsLoaded && fileCheck.checklistId) {
+      demoCheckRan.current = projectId;
+      fileCheck.runCheck();
+    }
+  }, [
+    demoIntent,
+    projectId,
+    showFileCheck,
+    fileCheck.checklistsLoaded,
+    fileCheck.checklistId,
+    fileCheck.runCheck,
   ]);
 
   // Fetch real step progress for in-progress workflows on page load (once)
@@ -546,17 +624,25 @@ function ProjectDetailPage() {
                     }
                     onArtifactSelect={artifactsHook.handleArtifactSelect}
                     onArtifactDownload={artifactsHook.handleArtifactDownload}
-                    onArtifactDelete={artifactsHook.handleArtifactDelete}
+                    onArtifactDelete={
+                      PUBLIC_DEMO ? undefined : artifactsHook.handleArtifactDelete
+                    }
                     onRefreshArtifacts={artifactsHook.loadArtifacts}
                     onCollapse={() => panelLayout.setSidePanelCollapsed(true)}
                     documents={documentsHook.documents}
                     workflows={documentsHook.workflows}
                     workflowProgressMap={documentsHook.workflowProgressMap}
                     uploading={documentsHook.uploading}
-                    onAddDocument={() => documentsHook.setShowUploadModal(true)}
+                    onAddDocument={
+                      PUBLIC_DEMO
+                        ? undefined
+                        : () => documentsHook.setShowUploadModal(true)
+                    }
                     onRefreshDocuments={documentsHook.loadDocuments}
                     onViewWorkflow={documentsHook.loadWorkflowDetail}
-                    onDeleteDocument={documentsHook.handleDeleteDocument}
+                    onDeleteDocument={
+                      PUBLIC_DEMO ? undefined : documentsHook.handleDeleteDocument
+                    }
                     onOpenFileCheck={openFileCheck}
                     onOpenPainPoints={openPainPointsFromNav}
                     // onViewProjectGraph={() => setShowProjectGraph(true)}
@@ -582,6 +668,8 @@ function ProjectDetailPage() {
                       pan={eligibilityTarget.pan}
                       onBack={backToFileCheck}
                       onClose={closeEligibility}
+                      initialTab={demoEligibilityTab}
+                      autoCalculate={demoAutoCalculate}
                     />
                   )}
                   {/* Why DSAs need this - same overlay; "Show me" opens File Check */}

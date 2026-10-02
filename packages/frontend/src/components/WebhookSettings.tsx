@@ -21,6 +21,7 @@ import {
   webhookUrlValue,
 } from '../lib/integrations';
 import type { WebhookDelivery } from '../types/integrations';
+import { PUBLIC_DEMO } from '../demo/mode';
 
 // The API's own 503 details (packages/backend/app/routers/integrations.py);
 // any other 503 comes from the gateway, not from a missing setting.
@@ -409,7 +410,7 @@ export default function WebhookSettings({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="submit"
-            disabled={saving || !dirty}
+            disabled={PUBLIC_DEMO || saving || !dirty}
             className={PRIMARY_CLASS}
           >
             {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
@@ -556,7 +557,7 @@ export default function WebhookSettings({
               ref={generateRef}
               type="button"
               onClick={handleGenerate}
-              disabled={secretBusy}
+              disabled={PUBLIC_DEMO || secretBusy}
               className={BUTTON_CLASS}
             >
               {secretBusy ? (
@@ -591,7 +592,8 @@ export default function WebhookSettings({
           <button
             type="button"
             onClick={sendTest}
-            disabled={!canTest || testing}
+            disabled={PUBLIC_DEMO || !canTest || testing}
+            title={PUBLIC_DEMO ? 'Switched off in the read-only demo' : undefined}
             className={BUTTON_CLASS}
           >
             {testing ? (

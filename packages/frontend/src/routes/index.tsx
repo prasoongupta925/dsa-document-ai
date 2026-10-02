@@ -19,6 +19,7 @@ import {
   writeProjectsView,
   type ProjectsView,
 } from '../lib/projectTree';
+import { notifyReadOnly, PUBLIC_DEMO } from '../demo/mode';
 
 type SortOption =
   | 'created_desc'
@@ -305,11 +306,13 @@ function ProjectsPage() {
   }, [loadProjects]);
 
   const openCreateModal = () => {
+    if (PUBLIC_DEMO) return notifyReadOnly();
     setEditingProject(null);
     setShowModal(true);
   };
 
   const openEditModal = (project: Project) => {
+    if (PUBLIC_DEMO) return notifyReadOnly();
     setEditingProject(project);
     setShowModal(true);
   };
@@ -348,6 +351,7 @@ function ProjectsPage() {
   };
 
   const handleDeleteProject = (project: Project) => {
+    if (PUBLIC_DEMO) return notifyReadOnly();
     setDeleteTarget(project);
   };
 

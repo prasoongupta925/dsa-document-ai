@@ -9,6 +9,8 @@ import { createRoot } from 'react-dom/client';
 import { RouterProvider, createRouter } from '@tanstack/react-router';
 import { routeTree } from './routeTree.gen';
 import './i18n';
+import { PUBLIC_DEMO } from './demo/mode';
+import { DemoToaster } from './demo/ui';
 
 export type RouterProviderContext = {
   runtimeConfig?: ReturnType<typeof useRuntimeConfig>;
@@ -44,6 +46,7 @@ if (root) {
         <CognitoAuth>
           <WebSocketProvider>
             <ToastProvider>
+              {PUBLIC_DEMO && <DemoToaster />}
               <App />
             </ToastProvider>
           </WebSocketProvider>

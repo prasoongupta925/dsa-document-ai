@@ -4,6 +4,10 @@ import React, {
   useEffect,
   useState,
 } from 'react';
+import { PUBLIC_DEMO } from '../../demo/mode';
+
+/** The public demo calls no backend: no runtime-config.json, no Cognito. */
+const DEMO_RUNTIME_CONFIG: IRuntimeConfig = { apis: {} };
 
 export interface CognitoProps {
   region: string;
@@ -47,8 +51,9 @@ const applyOverrides = (runtimeConfig: IRuntimeConfig) => {
 const RuntimeConfigProvider: React.FC<PropsWithChildren> = ({ children }) => {
   const [runtimeConfig, setRuntimeConfig] = useState<
     IRuntimeConfig | undefined
-  >();
+  >(PUBLIC_DEMO ? DEMO_RUNTIME_CONFIG : undefined);
   useEffect(() => {
+    if (PUBLIC_DEMO) return;
     (async () => {
       try {
         setRuntimeConfig(
