@@ -117,7 +117,7 @@ print(f"Slide {len(pres.slides)}/{TOTAL} added.")
 ```python
 import boto3
 
-S3_URI = "s3://idp-v2-agent-storage-008165007574/user/proj/artifacts/art_xxx/deck.pptx"   # paste from artifact_path
+S3_URI = "s3://idp-v2-agent-storage-<account-id>/user/proj/artifacts/art_xxx/deck.pptx"   # paste from artifact_path
 BUCKET, KEY = S3_URI.replace("s3://", "").split("/", 1)
 
 s3 = boto3.client('s3')

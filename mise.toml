@@ -40,7 +40,7 @@ arg "value" help="status value, or generated prompt text"
 run = """
 set -euo pipefail
 
-QUEUE_URL="${QUEUE_URL:-https://sqs.us-east-1.amazonaws.com/975050239358/idp-v2-websocket-message-queue}"
+QUEUE_URL="${QUEUE_URL:-https://sqs.us-east-1.amazonaws.com/<account-id>/idp-v2-websocket-message-queue}"
 REGION="$(echo "$QUEUE_URL" | sed -n 's#^https://sqs\\.\\([^.]*\\)\\..*#\\1#p')"
 REGION="${REGION:-us-east-1}"
 
